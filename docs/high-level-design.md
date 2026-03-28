@@ -14,7 +14,7 @@ We need a **local-first, project-based orchestrator** that treats AI agent sessi
 2. **Worktree-isolated sessions** — Each agent session operates in its own `git worktree`, preventing conflicts and enabling parallel work on the same repo.
 3. **Task ticket system** — Inspired by Paperclip: every unit of work is a ticket with status, assigned agent, conversation thread, and audit trail. Atomic checkout prevents duplicate work.
 4. **Cross-device handoff** — Inspired by happy.engineering: seamlessly continue monitoring and interacting with agent sessions from a mobile device or another machine.
-5. **Agent-agnostic via ACP/A2A** — Use the Agent Communication Protocol (now merged into A2A under Linux Foundation) to connect to any agent runtime. Agents are pluggable — swap in Claude Code, Codex, or custom agents without changing the orchestrator.
+5. **Agent-agnostic via ACP (Agent Client Protocol)** — Use the Agent Client Protocol (JetBrains/Zed standard — JSON-RPC over stdio, bridged to WebSocket) to connect to coding agents. This is the same protocol used by Marimo, Zed, and Neovim to connect to OpenCode, Claude Code, Codex, and Gemini. Agents are pluggable subprocess-based processes.
 6. **Local-first** — Desktop application that runs entirely on the developer's machine. No cloud accounts, no external dependencies for core functionality. Data stored in SQLite + git.
 
 ## Non-Goals
@@ -22,7 +22,7 @@ We need a **local-first, project-based orchestrator** that treats AI agent sessi
 - **Personas / role-based agent hierarchy** — No org charts or CEO agents. Flat task assignment model.
 - **Multi-user / team features** — Single developer use case for v1. No shared state across users.
 - **Cloud hosting** — No hosted version. The app runs locally; mobile access is via network relay.
-- **Agent implementation** — We orchestrate agents, we don't implement them. Agents are external processes connected via ACP/A2A.
+- **Agent implementation** — We orchestrate agents, we don't implement them. Agents are external subprocesses connected via ACP (Agent Client Protocol).
 - **CI/CD integration** — Not a build system. Agents can trigger CI, but we don't manage pipelines.
 
 ## Target Users
@@ -53,28 +53,31 @@ We need a **local-first, project-based orchestrator** that treats AI agent sessi
 │  │              │  │   track)     │  │   output capture) │  │
 │  └──────────────┘  └──────────────┘  └───────────────────┘  │
 │                                                              │
-│  ┌──────────────┐  ┌──────────────┐                         │
-│  │  WebSocket   │  │    ACP/A2A   │                         │
-│  │    Hub       │  │   Gateway    │                         │
-│  │ (real-time   │  │  (agent      │                         │
-│  │  sync +      │  │   discovery  │                         │
-│  │  relay)      │  │   + dispatch)│                         │
-│  └──────────────┘  └──────────────┘                         │
+│  ┌──────────────┐  ┌──────────────┐  ┌───────────────────┐  │
+│  │  WebSocket   │  │     ACP      │  │    Tailscale      │  │
+│  │    Hub       │  │   Gateway    │  │    Funnel         │  │
+│  │ (real-time   │  │  (subprocess │  │  (HTTPS tunnel    │  │
+│  │  sync +      │  │   mgmt,      │  │   for mobile      │  │
+│  │  streaming)  │  │   stdio-ws)  │  │   handoff)        │  │
+│  └──────────────┘  └──────────────┘  └───────────────────┘  │
 │                                                              │
 │  ┌──────────────────────────────────────────────────────┐   │
 │  │              SQLite (local storage)                   │   │
 │  │  projects | tasks | sessions | agent_registry | logs │   │
 │  └──────────────────────────────────────────────────────┘   │
 └──────────────────────────────────────────────────────────────┘
-                       │ ACP/A2A (HTTP + SSE)
+                       │ ACP (JSON-RPC over stdio / WebSocket)
                        ▼
 ┌──────────────────────────────────────────────────────────────┐
-│                     Agent Layer                              │
+│              Agent Layer (subprocesses via ACP)               │
 │                                                              │
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐ │
-│  │ Claude Code │  │   Codex     │  │  Custom Agent       │ │
-│  │  (ACP srv)  │  │  (ACP srv)  │  │  (any ACP server)   │ │
+│  │  OpenCode   │  │ Claude Code │  │  Codex / Gemini /   │ │
+│  │  (primary)  │  │             │  │  any ACP agent      │ │
 │  └─────────────┘  └─────────────┘  └─────────────────────┘ │
+│        ↑                ↑                    ↑              │
+│     opencode acp    claude acp         <agent> acp          │
+│     (stdio)         (stdio)            (stdio)              │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -82,14 +85,15 @@ We need a **local-first, project-based orchestrator** that treats AI agent sessi
 
 ### Decision 1: Git Worktrees for Session Isolation
 
-**Choice**: Each task ticket gets a dedicated `git worktree`. The agent assigned to that ticket operates exclusively in that worktree.
+**Choice**: Worktrees provide filesystem isolation for agent sessions. Multiple task tickets can be assigned to a single worktree (e.g., related bug fixes on the same feature branch), but each worktree has at most one active agent session at a time.
 
-**Rationale**: Worktrees provide true filesystem isolation without the overhead of full clones. Multiple agents can work on different features of the same repo simultaneously. Merging results back is standard git merge/rebase. Cleanup is `git worktree remove`.
+**Rationale**: Worktrees provide true filesystem isolation without the overhead of full clones. Multiple agents can work on different features of the same repo simultaneously. Merging results back is standard git merge/rebase. Cleanup is `git worktree remove`. Allowing multiple tickets per worktree avoids worktree sprawl for related tasks.
 
 **Alternatives considered**:
 - Docker containers per session: Too heavy for local dev, adds complexity
 - Branch-only (shared worktree): Race conditions on filesystem, agents step on each other
 - Separate clones: Wastes disk, harder to merge
+- Strict 1:1 ticket-to-worktree: Too rigid; related tickets naturally belong on the same branch
 
 ### Decision 2: SQLite for Local State
 
@@ -102,27 +106,32 @@ We need a **local-first, project-based orchestrator** that treats AI agent sessi
 - JSON files: No query capability, no ACID guarantees
 - TinyDB: Limited query language, less battle-tested
 
-### Decision 3: ACP/A2A for Agent Communication
+### Decision 3: ACP (Agent Client Protocol) for Agent Communication
 
-**Choice**: Use the ACP protocol (Python `acp-sdk`) for agent-to-agent communication, with awareness that ACP has merged into A2A.
+**Choice**: Use the Agent Client Protocol (ACP) — the JetBrains/Zed standard — for connecting to coding agents. This is the same protocol Marimo uses to connect to OpenCode, Claude Code, Codex, and Gemini.
 
-**Rationale**: ACP provides a clean REST/HTTP-based protocol for discovering and invoking agents. The Python SDK is mature enough for our needs. Framework-agnostic — any agent that implements an ACP server endpoint can be plugged in. Supports sync, async, and SSE streaming. Migration path to A2A when the ecosystem consolidates.
+**How it works**: Agents run as subprocesses speaking JSON-RPC over stdio. The orchestrator launches each agent in ACP mode (e.g., `opencode acp`, `claude code acp`) and communicates via stdin/stdout. For WebSocket-based consumers (like the frontend), a `stdio-to-ws` bridge exposes each agent on a dedicated port. Python ACP SDK available for implementation.
 
-**Alternatives considered**:
-- Raw HTTP/custom protocol: Reinventing the wheel, no discovery standard
-- MCP only: MCP is for agent-to-tool, not agent-to-agent; complementary, not a replacement
-- gRPC: More performant but less developer-friendly, harder to debug
-
-### Decision 4: WebSocket Relay for Mobile Handoff
-
-**Choice**: The FastAPI backend serves as both the local app server and a WebSocket relay. Mobile devices connect to the same backend over the local network (or via a tunnel like Tailscale for remote access).
-
-**Rationale**: Keeps it simple and local-first. No external relay server needed for LAN use. For remote access, Tailscale or similar mesh VPN provides secure connectivity without exposing ports. The HTMX frontend is responsive and works on mobile browsers — no native app needed for v1.
+**Rationale**: ACP is the emerging standard for editor-to-agent communication, adopted by Zed, Neovim, Marimo, and JetBrains. Using the same protocol means any agent that supports ACP works out of the box. Subprocess-based — fits local-first perfectly. No external servers needed.
 
 **Alternatives considered**:
-- Dedicated relay server (happy.engineering style): Adds infrastructure, defeats local-first for basic use
+- IBM ACP / A2A (agent-to-agent): Different protocol, designed for agent-to-agent not editor-to-agent; overkill for subprocess management
+- Raw HTTP/custom protocol: Reinventing the wheel, no ecosystem compatibility
+- MCP only: MCP is for agent-to-tool, not orchestrator-to-agent; complementary, not a replacement
+- gRPC: More performant but less developer-friendly, no existing agent support
+
+### Decision 4: Tailscale Tunnel for Mobile Handoff
+
+**Choice**: The FastAPI backend serves as both the local app server and a WebSocket relay. Mobile devices connect via **Tailscale Funnel** (or Tailscale mesh VPN) for secure access from anywhere on the internet. Tailscale is a required dependency, not optional.
+
+**Rationale**: The user needs to orchestrate agents from anywhere — coffee shop, phone on the go, another machine. Tailscale Funnel exposes the local FastAPI server to the internet over HTTPS with automatic TLS, authenticated by Tailscale identity. No port forwarding, no relay server infrastructure, no cloud hosting. The HTMX frontend is responsive and works on mobile browsers.
+
+**Alternatives considered**:
+- LAN-only: Too limiting; user explicitly needs internet-wide access
+- Dedicated relay server (happy.engineering style): Adds infrastructure to host and maintain
+- Cloudflare Tunnel: Good but Tailscale offers mesh VPN for device-to-device too
 - Native mobile app: High development cost, unnecessary when responsive web works
-- Push notifications: Complex to self-host; polling/WebSocket is sufficient for v1
+- ngrok: Less integrated, no mesh VPN, less secure identity model
 
 ### Decision 5: HTMX + Alpine.js + CSS for Frontend
 
@@ -158,22 +167,25 @@ We need a **local-first, project-based orchestrator** that treats AI agent sessi
 Project
 ├── id, name, repo_path, vcs_url, created_at
 │
-├── Task (ticket)
-│   ├── id, project_id, title, description, status
-│   ├── assigned_agent_id, priority, created_at, updated_at
-│   ├── worktree_path, branch_name
-│   └── TaskMessage (conversation thread)
-│       ├── id, task_id, role (user|agent|system), content, timestamp
-│       └── metadata (token usage, tool calls, etc.)
-│
-├── Session
-│   ├── id, task_id, agent_id, worktree_path
-│   ├── status (running|paused|completed|failed)
-│   ├── started_at, ended_at
-│   └── output_log_path
+├── Worktree
+│   ├── id, project_id, branch_name, path, created_at
+│   ├── status (active|merged|archived)
+│   │
+│   ├── Task (ticket) — multiple tasks per worktree
+│   │   ├── id, worktree_id, title, description, status
+│   │   ├── assigned_agent_id, priority, created_at, updated_at
+│   │   └── TaskMessage (conversation thread)
+│   │       ├── id, task_id, role (user|agent|system), content, timestamp
+│   │       └── metadata (token usage, tool calls, etc.)
+│   │
+│   └── Session — one active session per worktree at a time
+│       ├── id, worktree_id, agent_id
+│       ├── status (running|paused|completed|failed)
+│       ├── started_at, ended_at, pid
+│       └── output_log_path
 │
 └── AgentRegistry
-    ├── id, name, type, acp_endpoint
+    ├── id, name, acp_command (e.g., "opencode acp")
     ├── capabilities (JSON), status (online|offline)
     └── config (JSON)
 ```
@@ -182,7 +194,8 @@ Project
 
 | Risk | Mitigation |
 |------|------------|
-| ACP/A2A ecosystem still maturing | Use `acp-sdk` now; keep agent interface thin so we can swap to A2A SDK later |
+| ACP ecosystem still evolving | ACP is adopted by JetBrains, Zed, Marimo — momentum is strong; keep agent interface thin regardless |
+| Tailscale as hard dependency | Tailscale is free for personal use; document manual alternatives (ngrok, Cloudflare Tunnel) for users who can't use it |
 | Git worktree limits on large repos | Monitor worktree count; auto-cleanup completed sessions; warn at threshold |
 | WebSocket reliability on mobile | Implement reconnection with message queue; HTMX has built-in reconnect for SSE |
 | Agent processes crash or hang | Heartbeat monitoring with configurable timeout; auto-fail stuck sessions |
@@ -193,5 +206,5 @@ Project
 - [Project Management LLD](./designs/project-management/LLD.md)
 - [Task Engine LLD](./designs/task-engine/LLD.md)
 - [Session Manager LLD](./designs/session-manager/LLD.md)
-- [ACP Gateway LLD](./designs/acp-gateway/LLD.md)
+- [ACP Agent Gateway LLD](./designs/acp-gateway/LLD.md)
 - [Frontend & Mobile Handoff LLD](./designs/frontend/LLD.md)
