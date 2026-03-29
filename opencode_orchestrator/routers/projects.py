@@ -1,7 +1,7 @@
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from opencode_orchestrator.models import get_db, row_to_dict, now
@@ -47,7 +47,6 @@ async def list_projects():
 
 @router.post("", status_code=201, response_model=ProjectResponse)
 async def create_project(data: ProjectCreate):
-    import json
 
     import os
 

@@ -564,6 +564,15 @@ body.modal-open {
     border: 1px solid #fcc;
 }
 
+.message-system {
+    background: var(--bg-secondary);
+    align-self: center;
+    border: 1px dashed var(--border);
+    color: var(--text-muted);
+    font-style: italic;
+    font-size: 0.85rem;
+}
+
 .message-role {
     font-size: 0.7rem;
     text-transform: uppercase;

@@ -142,4 +142,4 @@ def row_to_dict(row: aiosqlite.Row) -> dict[str, Any]:
 
 
 def now() -> str:
-    return datetime.datetime.utcnow().isoformat()
+    return datetime.datetime.now(datetime.UTC).isoformat()

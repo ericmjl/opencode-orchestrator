@@ -135,6 +135,8 @@ const statusBadge = document.querySelector('.badge-{{ task.status }}');
 
 let waitingForReply = false;
 let pollInterval = null;
+const POLL_TIMEOUT_MS = 120_000;
+let pollStart = null;
 
 // Number of messages rendered server-side; we use count-based dedup
 // instead of timestamp comparison to avoid timezone/precision mismatches.
@@ -192,6 +194,15 @@ async function pollForMessages() {
             clearInterval(pollInterval);
             pollInterval = null;
         }
+
+        if (waitingForReply && pollStart && (Date.now() - pollStart > POLL_TIMEOUT_MS)) {
+            waitingForReply = false;
+            sendBtn.disabled = false;
+            clearInterval(pollInterval);
+            pollInterval = null;
+            updateStatusBadge('completed');
+            addMessage('system', 'Timed out waiting for agent reply. You can try sending again.', new Date().toISOString());
+        }
     } catch (e) {
         // Silently ignore polling errors
     }
@@ -224,6 +235,7 @@ async function sendMessage() {
             alert('Failed to send message');
             return;
         }
+        pollStart = Date.now();
         pollInterval = setInterval(pollForMessages, 1000);
     } catch(e) {
         waitingForReply = false;

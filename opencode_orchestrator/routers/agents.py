@@ -4,7 +4,6 @@ import asyncio
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-import json
 
 from opencode_orchestrator.models import get_db, row_to_dict, now
 
@@ -62,7 +61,6 @@ async def list_agents():
 
 @router.post("", status_code=201, response_model=AgentResponse)
 async def create_agent(data: AgentCreate):
-    import json
 
     command = f"opencode serve --port {data.port}"
     agent_id = str(uuid.uuid4())

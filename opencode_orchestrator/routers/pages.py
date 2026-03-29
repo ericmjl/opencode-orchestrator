@@ -1,4 +1,3 @@
-import uuid
 from pathlib import Path
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
@@ -85,7 +84,6 @@ async def sessions_page(request: Request, project_id: str) -> HTMLResponse:
 @pages_router.get("/projects/{project_id}/tasks/{task_id}")
 async def task_detail_page(request: Request, project_id: str, task_id: str) -> HTMLResponse:
     from opencode_orchestrator.models import get_db, row_to_dict
-    import httpx
 
     async for db in get_db():
         proj = await db.execute("SELECT * FROM projects WHERE id = ?", (project_id,))

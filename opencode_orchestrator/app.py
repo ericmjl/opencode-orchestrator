@@ -1,10 +1,13 @@
+# ruff: noqa: E402
 import logging
+import os
 import random
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from opencode_orchestrator.models import init_db
@@ -48,8 +51,6 @@ async def recover_stale_tasks():
 
 app = FastAPI(title="OpenCode Orchestrator", version="0.1.0", lifespan=lifespan)
 
-import os
-
 static_dir = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
@@ -63,9 +64,6 @@ app.include_router(agents.router, prefix="/api/agents", tags=["agents"])
 app.include_router(worktrees.router, prefix="/api/projects", tags=["worktrees"])
 app.include_router(pages_router, tags=["pages"])
 
-from fastapi.responses import RedirectResponse
-from fastapi import Request
-
 
 @app.get("/")
 async def root(request: Request):
@@ -73,6 +71,6 @@ async def root(request: Request):
 
 
 if __name__ == "__main__":
-    port = random.randint(8000, 9000)
+    port = int(os.environ.get("OC_PORT", random.randint(8000, 9000)))
     print(f"Starting server on http://127.0.0.1:{port}")
     uvicorn.run("opencode_orchestrator.app:app", host="127.0.0.1", port=port, reload=True)

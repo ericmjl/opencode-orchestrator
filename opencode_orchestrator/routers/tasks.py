@@ -12,20 +12,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-async def _probe_session(port: int, session_id: str) -> bool:
-    import httpx
-
-    try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(
-                f"http://127.0.0.1:{port}/session/{session_id}",
-                timeout=httpx.Timeout(5.0),
-            )
-            return resp.status_code == 200
-    except Exception:
-        return False
-
-
 async def probe_agent_session(session_id: str, port: int) -> bool:
     import httpx
 
@@ -314,7 +300,6 @@ async def create_task(project_id: str, data: TaskCreate):
 
 @router.get("/{project_id}/tasks/{task_id}")
 async def get_task_detail(project_id: str, task_id: str):
-    import httpx
 
     async for db in get_db():
         task_row = await db.execute(
@@ -362,94 +347,6 @@ async def get_task_messages(project_id: str, task_id: str):
         messages = [row_to_dict(row) for row in await msg_rows.fetchall()]
 
     return {"messages": messages}
-
-    async def event_generator():
-        last_timestamp = since
-        last_status = None
-        while True:
-            try:
-                async for db in get_db():
-                    task_row = await db.execute(
-                        "SELECT * FROM tasks WHERE id = ? AND project_id = ?", (task_id, project_id)
-                    )
-                    task = await task_row.fetchone()
-                    if not task:
-                        break
-
-                    t = row_to_dict(task)
-                    current_status = t.get("status")
-
-                    # Emit a status-change event whenever the task status changes
-                    if current_status != last_status:
-                        last_status = current_status
-                        yield f"data: {json.dumps({'event': 'task_status', 'status': current_status})}\n\n"
-
-                    query = "SELECT * FROM task_messages WHERE task_id = ?"
-                    params = [task_id]
-                    if last_timestamp:
-                        query += " AND timestamp > ?"
-                        params.append(last_timestamp)
-                    query += " ORDER BY timestamp ASC"
-
-                    msg_rows = await db.execute(query, params)
-                    messages = [row_to_dict(row) for row in await msg_rows.fetchall()]
-
-                    for msg in messages:
-                        last_timestamp = msg["timestamp"]
-                        yield f"data: {json.dumps(msg)}\n\n"
-
-                    if current_status in ("completed", "failed", "cancelled"):
-                        yield f"data: {json.dumps({'event': 'task_ended', 'status': current_status})}\n\n"
-                        break
-            except Exception as e:
-                yield f"data: {json.dumps({'error': str(e)})}\n\n"
-
-            await asyncio.sleep(1)
-
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
-
-
-@router.post("/{project_id}/tasks/{task_id}/message")
-async def send_task_message(project_id: str, task_id: str):
-    import httpx
-
-    async for db in get_db():
-        task_row = await db.execute(
-            "SELECT * FROM tasks WHERE id = ? AND project_id = ?", (task_id, project_id)
-        )
-        task = await task_row.fetchone()
-        if not task:
-            raise HTTPException(status_code=404, detail=f"Task '{task_id}' not found")
-        t = row_to_dict(task)
-
-        session_row = await db.execute(
-            "SELECT * FROM sessions WHERE task_id = ? AND status = 'running' ORDER BY started_at DESC LIMIT 1",
-            (task_id,),
-        )
-        session = await session_row.fetchone()
-        if not session:
-            return {"status": "error", "message": "No active session for this task"}
-
-        s = row_to_dict(session)
-        session_id = s["id"]
-
-        agent_row = await db.execute(
-            "SELECT * FROM agent_registry WHERE id = ?", (t.get("assigned_agent_id"),)
-        )
-        agent = await agent_row.fetchone()
-        if not agent:
-            return {"status": "error", "message": "Agent not found"}
-
-        a = row_to_dict(agent)
-
-    base_url = f"http://127.0.0.1:{a['port']}"
-
-    from pydantic import BaseModel
-
-    class MessageRequest(BaseModel):
-        message: str
-
-    return {"status": "ok", "message": "Message sending moved to send-message endpoint"}
 
 
 @router.post("/{project_id}/tasks/{task_id}/send-message")

@@ -26,8 +26,7 @@ def test_project_detail_has_enter_key_handler():
     assert "createTask()" in content, "Create task must call createTask() on Enter"
 
 
-def test_task_detail_has_sse_stream():
-    """Test that the task detail template has SSE stream endpoint."""
+def test_task_detail_has_polling():
     template_path = (
         Path(__file__).parent.parent
         / "opencode_orchestrator"
@@ -37,8 +36,23 @@ def test_task_detail_has_sse_stream():
     )
     content = template_path.read_text()
 
-    assert "EventSource" in content, "Task detail must use EventSource for SSE"
-    assert "/stream" in content, "Task detail must connect to stream endpoint"
+    assert "pollForMessages" in content, "Task detail must use polling for messages"
+    assert "/messages" in content, "Task detail must poll the messages endpoint"
+    assert "POLL_TIMEOUT_MS" in content, "Polling must have a timeout"
+
+
+def test_task_detail_poll_timeout():
+    template_path = (
+        Path(__file__).parent.parent
+        / "opencode_orchestrator"
+        / "templates"
+        / "pages"
+        / "task-detail.html"
+    )
+    content = template_path.read_text()
+
+    assert "Timed out" in content, "Poll timeout must show a message to the user"
+    assert "sendBtn.disabled = false" in content, "Send button must re-enable after timeout"
 
 
 def test_create_task_triggers_agent():
@@ -51,9 +65,7 @@ def test_create_task_triggers_agent():
     assert "send_task_to_agent_background" in content, (
         "Task creation must trigger background agent task"
     )
-    assert "message_resp = await client.post" in content, (
-        "Task creation must send message to agent session"
-    )
+    assert "client.stream(" in content, "Task creation must stream the agent message response"
     assert "task_messages" in content, "Task creation must store messages in database"
 
 
