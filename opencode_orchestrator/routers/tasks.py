@@ -2,34 +2,14 @@ import uuid
 import asyncio
 import json
 import logging
-from datetime import datetime, timezone as tz
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 
 from opencode_orchestrator.models import get_db, row_to_dict, now
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-
-
-async def recover_stale_running_tasks():
-    now_iso = datetime.now(tz.utc).isoformat()
-    async for db in get_db():
-        rows = await db.execute(
-            "SELECT id FROM tasks WHERE status = 'running' AND updated_at < ?",
-            (now_iso,),
-        )
-        stale = await rows.fetchall()
-        if stale:
-            for row in stale:
-                task_id = row[0]
-                await db.execute("UPDATE tasks SET status = 'failed', WHERE id = ?", (task_id,))
-                await db.execute(
-                    "UPDATE sessions SET status = 'completed', ended_at = ? WHERE task_id = ? AND status = 'running'",
-                    (now_iso, task_id),
-                )
-            await db.commit()
-            logger.info(f"Recovered {len(stale)} stale running tasks on startup")
 
 
 async def _probe_session(port: int, session_id: str) -> bool:
