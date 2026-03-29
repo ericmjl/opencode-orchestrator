@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Sessions</h1>
+    <div class="project-nav">
+        <a href="/projects/{{ project.id }}" class="btn btn-sm">&#8592; Back to Project</a>
+    </div>
+</div>
+
+<div class="session-list">
+    {% for session in sessions %}
+    <div class="session-row">
+        <div class="session-status session-status-{{ session.status }}"></div>
+        <div class="session-info">
+            <div class="session-title mono">{{ session.id }}</div>
+            <div class="session-meta">
+                Agent: {{ session.agent_id }}
+                {% if session.task_id %} | Task: <a href="/projects/{{ project.id }}/tasks/{{ session.task_id }}">{{ session.task_id[:8] }}...</a>{% endif %}
+                | Status: <span class="badge badge-{{ session.status }}">{{ session.status }}</span>
+                | Started: {{ session.started_at }}
+                {% set agent = agents.get(session.agent_id) %}
+                {% if agent %}
+                | <a href="http://127.0.0.1:{{ agent.port }}/{{ agent.cwd | opencode_slug }}/session/{{ session.id }}" target="_blank" rel="noopener">Live Session</a>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+    {% else %}
+    <p class="empty-state">No sessions yet</p>
+    {% endfor %}
+</div>
+{% endblock %}

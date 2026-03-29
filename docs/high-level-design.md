@@ -126,9 +126,7 @@ We need a **local-first, project-based orchestrator** that treats AI agent sessi
 
 ### Decision 5: HTMX + Alpine.js + CSS for Frontend
 
-### Decision 4: HTMX + Alpine.js + CSS for Frontend
 
-**Choice**: Server-rendered HTML via HTMX for most interactions, Alpine.js for small reactive elements (e.g., dropdowns, modals), vanilla CSS for styling. Minimal JavaScript. Loaded via CDN for simplicity.
 
 **Rationale**: HTMX keeps the frontend simple — FastAPI renders HTML fragments, HTMX swaps them in. No build step, no node_modules, no framework churn. Alpine.js fills the gap for client-side interactivity without a full framework.
 
@@ -137,7 +135,7 @@ We need a **local-first, project-based orchestrator** that treats AI agent sessi
 - Pure HTMX (no JS): Some interactions need a thin JS layer
 - Svelte: Nice but adds compilation step, smaller ecosystem
 
-### Decision 5: Pixi for Project Dependencies
+### Decision 6: Pixi for Project Dependencies
 
 **Choice**: Use pixi for managing Python dependencies and development environment.
 
@@ -213,6 +211,5 @@ Project
 - [Task Engine LLD](./designs/task-engine/LLD.md)
 - [Session Manager LLD](./designs/session-manager/LLD.md)
 - [Agent Gateway LLD](./designs/acp-gateway/LLD.md)
-- [Worktree Manager LLD](./designs/session-manager/LLD.md)
 - [Frontend LLD](./designs/frontend/LLD.md)
 - [EARS](./designs/ears.md)

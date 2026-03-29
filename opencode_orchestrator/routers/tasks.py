@@ -55,17 +55,21 @@ async def send_task_to_agent_background(
                         result = json.loads(body)
                         parts = result.get("parts", [])
                         response_text = ""
+                        pending_questions = []
                         for part in parts:
                             if part.get("type") == "text":
                                 response_text += part.get("text", "")
                             elif part.get("type") == "thought":
                                 response_text += part.get("thought", "")
+                            elif part.get("type") in ("tool_use", "question", "permission"):
+                                pending_questions.append(part)
 
                         logger.info(f"Agent response text: {response_text[:100]}...")
 
-                        if response_text:
-                            async for db in get_db():
-                                msg_timestamp = now()
+                        async for db in get_db():
+                            msg_timestamp = now()
+
+                            if response_text:
                                 await db.execute(
                                     """INSERT INTO task_messages (id, task_id, role, content, timestamp)
                                        VALUES (?, ?, 'assistant', ?, ?)""",
@@ -76,16 +80,46 @@ async def send_task_to_agent_background(
                                         msg_timestamp,
                                     ),
                                 )
+
+                            for q in pending_questions:
+                                q_id = str(uuid.uuid4())
+                                q_type = q.get("type", "unknown")
+                                q_content = (
+                                    q.get("text")
+                                    or q.get("question")
+                                    or q.get("input", {}).get("prompt", "")
+                                    or json.dumps(q)
+                                )
+                                q_metadata = json.dumps(q)
+                                await db.execute(
+                                    """INSERT INTO questions (id, session_id, task_id, question_type, content, metadata, status, created_at)
+                                       VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)""",
+                                    (
+                                        q_id,
+                                        agent_session_id,
+                                        task_id,
+                                        q_type,
+                                        q_content[:2000],
+                                        q_metadata,
+                                        msg_timestamp,
+                                    ),
+                                )
+                                logger.info(f"Stored pending question {q_id} of type {q_type}")
+
+                            if pending_questions:
+                                await db.execute(
+                                    "UPDATE tasks SET status = 'waiting', updated_at = ? WHERE id = ?",
+                                    (msg_timestamp, task_id),
+                                )
+                                logger.info(f"Task {task_id} is waiting for user input")
+                            else:
                                 await db.execute(
                                     "UPDATE tasks SET status = 'completed', completed_at = ?, updated_at = ? WHERE id = ?",
                                     (msg_timestamp, msg_timestamp, task_id),
                                 )
-                                # Leave the session status as 'running' so follow-up
-                                # messages reuse the same opencode session and retain context.
-                                await db.commit()
-                                logger.info(
-                                    f"Stored assistant message and marked task {task_id} as completed"
-                                )
+                                logger.info(f"Marked task {task_id} as completed")
+
+                            await db.commit()
                     except Exception as e:
                         logger.error(
                             f"Error processing agent response: {e!r}, body: {body[:200]!r}"
@@ -100,6 +134,7 @@ class TaskCreate(BaseModel):
     description: str
     title: str | None = None
     worktree_id: str | None = None
+    model: str | None = None
 
 
 class TaskUpdate(BaseModel):
@@ -126,6 +161,7 @@ class TaskResponse(BaseModel):
     schedule_enabled: bool
     retry_count: int
     max_retries: int
+    archived: bool
     created_at: str
     updated_at: str
     completed_at: str | None
@@ -133,12 +169,17 @@ class TaskResponse(BaseModel):
 
 @router.get("/{project_id}/tasks", response_model=list[TaskResponse])
 async def list_tasks(
-    project_id: str, status: str | None = None, assigned_agent_id: str | None = None
+    project_id: str,
+    status: str | None = None,
+    assigned_agent_id: str | None = None,
+    include_archived: bool = False,
 ):
     async for db in get_db():
         query = "SELECT * FROM tasks WHERE project_id = ?"
         params = [project_id]
 
+        if not include_archived:
+            query += " AND archived = 0"
         if status:
             query += " AND status = ?"
             params.append(status)
@@ -165,6 +206,7 @@ async def list_tasks(
                 schedule_enabled=bool(t["schedule_enabled"]),
                 retry_count=t["retry_count"],
                 max_retries=t["max_retries"],
+                archived=bool(t.get("archived", 0)),
                 created_at=t["created_at"],
                 updated_at=t["updated_at"],
                 completed_at=t["completed_at"],
@@ -226,7 +268,15 @@ async def create_task(project_id: str, data: TaskCreate):
 
         try:
             async with httpx.AsyncClient() as client:
-                session_resp = await client.post(f"{base_url}/session", json={"title": title[:50]})
+                session_json = {"title": title[:50]}
+                if data.model:
+                    if "/" in data.model:
+                        provider, model_id = data.model.split("/", 1)
+                        session_json["providerID"] = provider
+                        session_json["modelID"] = model_id
+                    else:
+                        session_json["modelID"] = data.model
+                session_resp = await client.post(f"{base_url}/session", json=session_json)
                 if session_resp.status_code == 200:
                     session = session_resp.json()
                     agent_session_id = session.get("id")
@@ -272,6 +322,7 @@ async def create_task(project_id: str, data: TaskCreate):
                         schedule_enabled=False,
                         retry_count=0,
                         max_retries=3,
+                        archived=False,
                         created_at=timestamp,
                         updated_at=timestamp,
                         completed_at=None,
@@ -292,6 +343,7 @@ async def create_task(project_id: str, data: TaskCreate):
         schedule_enabled=False,
         retry_count=0,
         max_retries=3,
+        archived=False,
         created_at=timestamp,
         updated_at=timestamp,
         completed_at=None,
@@ -576,6 +628,46 @@ async def run_task(project_id: str, task_id: str):
         return {"status": "error", "message": str(e)}
 
 
+@router.post("/{project_id}/tasks/{task_id}/archive")
+async def archive_task(project_id: str, task_id: str):
+    async for db in get_db():
+        task_row = await db.execute(
+            "SELECT * FROM tasks WHERE id = ? AND project_id = ?", (task_id, project_id)
+        )
+        task = await task_row.fetchone()
+        if not task:
+            raise HTTPException(status_code=404, detail=f"Task '{task_id}' not found")
+
+        timestamp = now()
+        await db.execute(
+            "UPDATE tasks SET archived = 1, updated_at = ? WHERE id = ?",
+            (timestamp, task_id),
+        )
+        await db.commit()
+
+    return {"status": "ok"}
+
+
+@router.post("/{project_id}/tasks/{task_id}/unarchive")
+async def unarchive_task(project_id: str, task_id: str):
+    async for db in get_db():
+        task_row = await db.execute(
+            "SELECT * FROM tasks WHERE id = ? AND project_id = ?", (task_id, project_id)
+        )
+        task = await task_row.fetchone()
+        if not task:
+            raise HTTPException(status_code=404, detail=f"Task '{task_id}' not found")
+
+        timestamp = now()
+        await db.execute(
+            "UPDATE tasks SET archived = 0, updated_at = ? WHERE id = ?",
+            (timestamp, task_id),
+        )
+        await db.commit()
+
+    return {"status": "ok"}
+
+
 @router.delete("/{project_id}/tasks/{task_id}", status_code=204)
 async def delete_task(project_id: str, task_id: str):
     async for db in get_db():
@@ -593,3 +685,82 @@ async def delete_task(project_id: str, task_id: str):
         await db.commit()
         if result.rowcount == 0:
             raise HTTPException(status_code=404, detail=f"Task '{task_id}' not found")
+
+
+@router.get("/sessions/{session_id}/questions")
+async def get_session_questions(session_id: str, status: str | None = None):
+    async for db in get_db():
+        query = "SELECT * FROM questions WHERE session_id = ?"
+        params = [session_id]
+
+        if status:
+            query += " AND status = ?"
+            params.append(status)
+
+        query += " ORDER BY created_at ASC"
+
+        rows = await db.execute(query, params)
+        questions = [row_to_dict(row) for row in await rows.fetchall()]
+
+    return {"questions": questions}
+
+
+class QuestionRespond(BaseModel):
+    response: str
+
+
+@router.post("/sessions/{session_id}/questions/{question_id}/respond")
+async def respond_to_question(session_id: str, question_id: str, data: QuestionRespond):
+    import httpx
+
+    async for db in get_db():
+        q_row = await db.execute(
+            "SELECT * FROM questions WHERE id = ? AND session_id = ?", (question_id, session_id)
+        )
+        question = await q_row.fetchone()
+        if not question:
+            raise HTTPException(status_code=404, detail=f"Question '{question_id}' not found")
+
+        q = row_to_dict(question)
+        if q["status"] != "pending":
+            raise HTTPException(status_code=400, detail="Question already answered")
+
+        task_id = q["task_id"]
+
+        task_row = await db.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
+        task = await task_row.fetchone()
+        if not task:
+            raise HTTPException(status_code=404, detail=f"Task '{task_id}' not found")
+
+        t = row_to_dict(task)
+        assigned_agent_id = t.get("assigned_agent_id")
+        if not assigned_agent_id:
+            raise HTTPException(status_code=400, detail="Task has no assigned agent")
+
+        agent_row = await db.execute(
+            "SELECT * FROM agent_registry WHERE id = ?", (assigned_agent_id,)
+        )
+        agent = await agent_row.fetchone()
+        if not agent:
+            raise HTTPException(status_code=404, detail="Agent not found")
+
+        a = row_to_dict(agent)
+        port = a["port"]
+
+        timestamp = now()
+        await db.execute(
+            "UPDATE questions SET status = 'answered', answered_at = ? WHERE id = ?",
+            (timestamp, question_id),
+        )
+        await db.commit()
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            f"http://127.0.0.1:{port}/session/{session_id}/message",
+            json={"parts": [{"type": "text", "text": data.response}]},
+            timeout=httpx.Timeout(30.0),
+        )
+        if resp.status_code != 200:
+            raise HTTPException(status_code=502, detail="Failed to send response to agent")
+
+    return {"status": "ok", "message": "Response sent to agent"}

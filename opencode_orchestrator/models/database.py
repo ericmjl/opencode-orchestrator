@@ -67,6 +67,7 @@ async def init_db() -> None:
                 schedule_id TEXT,
                 retry_count INTEGER NOT NULL DEFAULT 0,
                 max_retries INTEGER NOT NULL DEFAULT 3,
+                archived INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 completed_at TEXT,
@@ -115,6 +116,20 @@ async def init_db() -> None:
                 FOREIGN KEY (agent_id) REFERENCES agent_registry(id) ON DELETE CASCADE
             );
 
+            CREATE TABLE IF NOT EXISTS questions (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                task_id TEXT NOT NULL,
+                question_type TEXT NOT NULL,
+                content TEXT NOT NULL,
+                metadata TEXT,
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at TEXT NOT NULL,
+                answered_at TEXT,
+                FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
+                FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
+            );
+
             CREATE INDEX IF NOT EXISTS idx_worktrees_project ON worktrees(project_id);
             CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project_id);
             CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
@@ -123,7 +138,15 @@ async def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project_id);
             CREATE INDEX IF NOT EXISTS idx_sessions_task ON sessions(task_id);
             CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status);
+            CREATE INDEX IF NOT EXISTS idx_questions_session ON questions(session_id);
+            CREATE INDEX IF NOT EXISTS idx_questions_task ON questions(task_id);
+            CREATE INDEX IF NOT EXISTS idx_questions_status ON questions(status);
         """)
+
+        try:
+            await db.execute("ALTER TABLE tasks ADD COLUMN archived INTEGER NOT NULL DEFAULT 0")
+        except Exception:
+            pass
 
         await db.commit()
 

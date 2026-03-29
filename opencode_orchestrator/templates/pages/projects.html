@@ -23,6 +23,12 @@
             <div class="project-meta">
                 <a href="/projects/{{ project.id }}" class="btn btn-sm">Tasks</a>
                 <a href="/projects/{{ project.id }}/sessions" class="btn btn-sm">Sessions</a>
+                <button class="btn btn-sm btn-danger" @click="
+                    if (confirm('Remove {{ project.name | e }} from view? The project files will NOT be deleted.')) {
+                        fetch('/api/projects/{{ project.id }}', { method: 'DELETE' })
+                            .then(r => { if (r.ok || r.status === 204) window.location.reload(); else alert('Failed to remove project'); });
+                    }
+                ">Remove</button>
             </div>
         </div>
         {% else %}

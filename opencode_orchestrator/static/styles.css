@@ -315,6 +315,24 @@ body {
     border-color: var(--accent);
 }
 
+.task-card-completed {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.btn-archive {
+    flex-shrink: 0;
+    font-size: 0.75rem;
+    padding: 0.2rem 0.5rem;
+}
+
+.task-card-archived {
+    opacity: 0.6;
+    background: var(--bg-card);
+}
+
 .task-card-link {
     text-decoration: none;
     color: inherit;

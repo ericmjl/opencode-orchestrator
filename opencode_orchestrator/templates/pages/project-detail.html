@@ -5,6 +5,12 @@
     <h1>{{ project.name }}</h1>
     <div class="project-nav">
         <a href="/projects/{{ project.id }}/sessions" class="btn btn-sm">Sessions</a>
+        <button class="btn btn-sm btn-danger" onclick="
+            if (confirm('Remove {{ project.name | e }} from view? The project files will NOT be deleted.')) {
+                fetch('/api/projects/{{ project.id }}', { method: 'DELETE' })
+                    .then(r => { if (r.ok || r.status === 204) window.location.href = '/projects'; else alert('Failed to remove project'); });
+            }
+        ">Remove from View</button>
     </div>
 </div>
 
@@ -29,17 +35,6 @@
     <div x-show="activeTab === 'tasks'">
         <div class="task-board">
             <div class="task-column">
-                <h3>To Do</h3>
-                {% for task in tasks if task.status == 'created' %}
-                <a href="/projects/{{ project.id }}/tasks/{{ task.id }}" class="task-card task-card-link">
-                    <div class="task-title">{{ task.title }}</div>
-                </a>
-                {% else %}
-                <p class="empty-column">No tasks</p>
-                {% endfor %}
-            </div>
-
-            <div class="task-column">
                 <h3>Running</h3>
                 {% for task in tasks if task.status == 'running' %}
                 <a href="/projects/{{ project.id }}/tasks/{{ task.id }}" class="task-card task-card-link">
@@ -54,9 +49,18 @@
             <div class="task-column">
                 <h3>Completed</h3>
                 {% for task in tasks if task.status == 'completed' %}
-                <a href="/projects/{{ project.id }}/tasks/{{ task.id }}" class="task-card task-card-completed task-card-link">
-                    <div class="task-title">{{ task.title }}</div>
-                </a>
+                <div class="task-card task-card-completed">
+                    <a href="/projects/{{ project.id }}/tasks/{{ task.id }}" class="task-card-link" style="text-decoration: none; color: inherit;">
+                        <div class="task-title">{{ task.title }}</div>
+                    </a>
+                    <button class="btn btn-sm btn-archive" onclick="
+                        event.preventDefault();
+                        event.stopPropagation();
+                        var card = this.closest('.task-card');
+                        fetch('/api/projects/{{ project.id }}/tasks/{{ task.id }}/archive', { method: 'POST' })
+                            .then(r => { if(r.ok) window.location.reload(); else alert('Failed to archive'); });
+                    ">Archive</button>
+                </div>
                 {% else %}
                 <p class="empty-column">No tasks</p>
                 {% endfor %}
@@ -75,11 +79,47 @@
             </div>
         </div>
 
+        <div class="section-header" style="margin-top: 1rem;">
+            <h3 x-show="true" style="cursor: pointer;" @click="showArchived = !showArchived">
+                Archived (<span x-text="archivedTasks.length">0</span>)
+                <span x-text="showArchived ? '▾' : '▸'"></span>
+            </h3>
+        </div>
+        <div x-show="showArchived" x-init="
+            fetch('/api/projects/{{ project.id }}/tasks?include_archived=true')
+                .then(r => r.json())
+                .then(tasks => { archivedTasks = tasks.filter(t => t.archived); });
+        " x-data="{ showArchived: false, archivedTasks: [] }">
+            <div class="task-board" style="display: block;">
+                {% raw %}{{ archivedTasks.length === 0 }}{% endraw %}
+                <template x-if="archivedTasks.length === 0">
+                    <p class="empty-state">No archived tasks</p>
+                </template>
+                <template x-for="task in archivedTasks" :key="task.id">
+                    <div class="task-card task-card-archived" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
+                        <a :href="'/projects/{{ project.id }}/tasks/' + task.id" style="flex: 1; text-decoration: none; color: inherit;">
+                            <div class="task-title" x-text="task.title"></div>
+                        </a>
+                        <button class="btn btn-sm" @click="
+                            fetch('/api/projects/{{ project.id }}/tasks/' + task.id + '/unarchive', {method: 'POST'})
+                                .then(r => { if(r.ok) window.location.reload(); });
+                        ">Unarchive</button>
+                    </div>
+                </template>
+            </div>
+        </div>
+
         <div class="section-header">
             <h3>Create Task</h3>
         </div>
-        <form id="create-task-form" class="create-form" onsubmit="return false;">
+        <form id="create-task-form" class="create-form" onsubmit="return false;" x-data="{ models: [], loading: true }" x-init="fetch('/api/agents/models').then(r => r.json()).then(d => { models = d.models || []; loading = false; setTimeout(() => { const saved = localStorage.getItem('lastSelectedModel'); if (saved) document.getElementById('task-model').value = saved; }, 0); })">
             <div class="form-row">
+                <select id="task-model" style="width: 220px; margin-right: 0.5rem;" :disabled="loading">
+                    <option value="">Default model</option>
+                    <template x-for="model in models" :key="model.id">
+                        <option :value="model.id" x-text="model.name"></option>
+                    </template>
+                </select>
                 <input type="text" id="task-description" name="description" placeholder="What needs to be done? Press Enter to create" required style="flex: 1;" onkeydown="if(event.key==='Enter'){createTask();event.preventDefault();}">
                 <button type="button" class="btn btn-primary" onclick="createTask()">Create</button>
             </div>
@@ -87,6 +127,7 @@
         <script>
         async function createTask() {
             const input = document.getElementById('task-description');
+            const modelSelect = document.getElementById('task-model');
             const description = input.value.trim();
             if (!description) {
                 alert('Please enter a task description');
@@ -95,13 +136,20 @@
             const btn = document.querySelector('#create-task-form button');
             btn.disabled = true;
             btn.textContent = 'Creating...';
+            const payload = {description: description};
+            if (modelSelect.value) {
+                payload.model = modelSelect.value;
+            }
             try {
                 const response = await fetch('/api/projects/{{ project.id }}/tasks', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({description: description})
+                    body: JSON.stringify(payload)
                 });
                 if (response.ok) {
+                    if (modelSelect.value) {
+                        localStorage.setItem('lastSelectedModel', modelSelect.value);
+                    }
                     input.value = '';
                     window.location.reload();
                 } else {

@@ -10,6 +10,8 @@ pixi run python -m pytest tests/ -v
 
 ## UI Verification with agent-browser
 
+**Priority: API first, then agent-browser.** For any frontend change, first verify the API works correctly (curl, httpie, or `/docs`). Only use `agent-browser` after confirming the API endpoint behaves as expected.
+
 After making frontend changes, use the `agent-browser` skill to verify behavior:
 
 1. Load the `agent-browser` skill
@@ -31,7 +33,7 @@ pixi run python -m mypy opencode_orchestrator/
 ## Tech Stack
 
 - Backend: FastAPI + aiosqlite
-- Frontend: HTMX + plain JS (no Alpine.js, no React)
+- Frontend: HTMX + Alpine.js + plain JS
 - Agent integration: httpx streaming to opencode's HTTP API
 - Templates: Jinja2 in `opencode_orchestrator/templates/`
 

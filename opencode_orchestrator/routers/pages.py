@@ -1,9 +1,22 @@
+import base64
 from pathlib import Path
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 from jinja2 import Environment, FileSystemLoader
 
+
+def _opencode_slug(directory: str) -> str:
+    return (
+        base64.b64encode(directory.encode())
+        .decode()
+        .replace("+", "-")
+        .replace("/", "_")
+        .rstrip("=")
+    )
+
+
 templates = Environment(loader=FileSystemLoader(str(Path(__file__).parent.parent / "templates")))
+templates.filters["opencode_slug"] = _opencode_slug
 
 pages_router = APIRouter()
 
@@ -33,7 +46,7 @@ async def project_detail_page(request: Request, project_id: str) -> HTMLResponse
             return HTMLResponse("Project not found", status_code=404)
 
         tasks_rows = await db.execute(
-            "SELECT * FROM tasks WHERE project_id = ? ORDER BY priority ASC, created_at ASC",
+            "SELECT * FROM tasks WHERE project_id = ? AND archived = 0 ORDER BY priority ASC, created_at ASC",
             (project_id,),
         )
         tasks = [row_to_dict(row) for row in await tasks_rows.fetchall()]
@@ -74,10 +87,21 @@ async def sessions_page(request: Request, project_id: str) -> HTMLResponse:
             (project_id,),
         )
         sessions = [row_to_dict(row) for row in await sessions_rows.fetchall()]
+
+        agent_ids = {s["agent_id"] for s in sessions if s.get("agent_id")}
+        agents = {}
+        for aid in agent_ids:
+            agent_row = await db.execute("SELECT * FROM agent_registry WHERE id = ?", (aid,))
+            agent = await agent_row.fetchone()
+            if agent:
+                a = row_to_dict(agent)
+                agents[a["id"]] = a
         break
 
     template = templates.get_template("pages/sessions.html")
-    html = template.render(request=request, project=row_to_dict(project), sessions=sessions)
+    html = template.render(
+        request=request, project=row_to_dict(project), sessions=sessions, agents=agents
+    )
     return HTMLResponse(content=html)
 
 

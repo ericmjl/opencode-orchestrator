@@ -59,6 +59,50 @@ async def list_agents():
         ]
 
 
+@router.get("/models")
+async def list_available_models():
+    import httpx
+
+    models = []
+    async for db in get_db():
+        rows = await db.execute("SELECT * FROM agent_registry WHERE status = 'available'")
+        agents = [row_to_dict(row) for row in await rows.fetchall()]
+
+    for agent in agents:
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(
+                    f"http://127.0.0.1:{agent['port']}/config/providers", timeout=10.0
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    providers = data.get("providers", []) if isinstance(data, dict) else data
+                    for provider in providers:
+                        provider_id = provider.get("id", "")
+                        provider_name = provider.get("name", provider_id)
+                        provider_models = provider.get("models", {})
+                        if isinstance(provider_models, dict):
+                            provider_models = list(provider_models.values())
+                        for model in provider_models:
+                            model_id = model.get("id", "")
+                            if model_id:
+                                full_id = f"{provider_id}/{model_id}"
+                                model_name = model.get("name", model_id)
+                                if provider_name != provider_id:
+                                    model_name = f"{model_name} via {provider_name}"
+                                models.append(
+                                    {
+                                        "id": full_id,
+                                        "name": model_name,
+                                        "provider": provider_id,
+                                    }
+                                )
+        except Exception:
+            pass
+
+    return {"models": models}
+
+
 @router.post("", status_code=201, response_model=AgentResponse)
 async def create_agent(data: AgentCreate):
 
