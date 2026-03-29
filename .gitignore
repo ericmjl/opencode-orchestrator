@@ -1,0 +1,9 @@
+orchestrator.db
+__pycache__/
+*.pyc
+opopen_orchestrator/
+skills-lock.json
+test.txt
+orchestrator.db
+.pixi
+.pixi.lock

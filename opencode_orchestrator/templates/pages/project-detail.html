@@ -1,0 +1,135 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="page-header">
+    <h1>{{ project.name }}</h1>
+    <div class="project-nav">
+        <a href="/projects/{{ project.id }}/sessions" class="btn btn-sm">Sessions</a>
+    </div>
+</div>
+
+<div x-data="{ activeTab: 'tasks' }" x-init="
+    setInterval(() => {
+        fetch('/api/projects/{{ project.id }}/tasks')
+            .then(r => r.json())
+            .then(tasks => {
+                const runningNow = tasks.filter(t => t.status === 'running').map(t => t.id);
+                const wasRunning = document.querySelectorAll('.task-card-link .task-meta').length;
+                if (runningNow.length < wasRunning) {
+                    window.location.reload();
+                }
+            });
+    }, 5000);
+">
+    <div class="tabs">
+        <button :class="{ active: activeTab === 'tasks' }" @click="activeTab = 'tasks'">Tasks</button>
+        <button :class="{ active: activeTab === 'sessions' }" @click="activeTab = 'sessions'">Sessions</button>
+    </div>
+
+    <div x-show="activeTab === 'tasks'">
+        <div class="task-board">
+            <div class="task-column">
+                <h3>To Do</h3>
+                {% for task in tasks if task.status == 'created' %}
+                <a href="/projects/{{ project.id }}/tasks/{{ task.id }}" class="task-card task-card-link">
+                    <div class="task-title">{{ task.title }}</div>
+                </a>
+                {% else %}
+                <p class="empty-column">No tasks</p>
+                {% endfor %}
+            </div>
+
+            <div class="task-column">
+                <h3>Running</h3>
+                {% for task in tasks if task.status == 'running' %}
+                <a href="/projects/{{ project.id }}/tasks/{{ task.id }}" class="task-card task-card-link">
+                    <div class="task-title">{{ task.title }}</div>
+                    <div class="task-meta">Running...</div>
+                </a>
+                {% else %}
+                <p class="empty-column">No tasks</p>
+                {% endfor %}
+            </div>
+
+            <div class="task-column">
+                <h3>Completed</h3>
+                {% for task in tasks if task.status == 'completed' %}
+                <a href="/projects/{{ project.id }}/tasks/{{ task.id }}" class="task-card task-card-completed task-card-link">
+                    <div class="task-title">{{ task.title }}</div>
+                </a>
+                {% else %}
+                <p class="empty-column">No tasks</p>
+                {% endfor %}
+            </div>
+
+            <div class="task-column">
+                <h3>Failed</h3>
+                {% for task in tasks if task.status == 'failed' %}
+                <a href="/projects/{{ project.id }}/tasks/{{ task.id }}" class="task-card task-card-failed task-card-link">
+                    <div class="task-title">{{ task.title }}</div>
+                    <div class="task-meta">Retry {{ task.retry_count }}/{{ task.max_retries }}</div>
+                </a>
+                {% else %}
+                <p class="empty-column">No tasks</p>
+                {% endfor %}
+            </div>
+        </div>
+
+        <div class="section-header">
+            <h3>Create Task</h3>
+        </div>
+        <form id="create-task-form" class="create-form" onsubmit="return false;">
+            <div class="form-row">
+                <input type="text" id="task-description" name="description" placeholder="What needs to be done? Press Enter to create" required style="flex: 1;" onkeydown="if(event.key==='Enter'){createTask();event.preventDefault();}">
+                <button type="button" class="btn btn-primary" onclick="createTask()">Create</button>
+            </div>
+        </form>
+        <script>
+        async function createTask() {
+            const input = document.getElementById('task-description');
+            const description = input.value.trim();
+            if (!description) {
+                alert('Please enter a task description');
+                return;
+            }
+            const btn = document.querySelector('#create-task-form button');
+            btn.disabled = true;
+            btn.textContent = 'Creating...';
+            try {
+                const response = await fetch('/api/projects/{{ project.id }}/tasks', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({description: description})
+                });
+                if (response.ok) {
+                    input.value = '';
+                    window.location.reload();
+                } else {
+                    alert('Failed to create task');
+                }
+            } catch (e) {
+                alert('Error: ' + e.message);
+            }
+            btn.disabled = false;
+            btn.textContent = 'Create';
+        }
+        </script>
+    </div>
+
+    <div x-show="activeTab === 'sessions'">
+        <div class="session-list">
+            {% for session in sessions %}
+            <div class="session-row">
+                <div class="session-status session-status-{{ session.status }}"></div>
+                <div class="session-info">
+                    <div class="session-title">{{ session.id }}</div>
+                    <div class="session-meta">{{ session.agent_id }} - {{ session.status }}</div>
+                </div>
+            </div>
+            {% else %}
+            <p class="empty-state">No sessions yet</p>
+            {% endfor %}
+        </div>
+    </div>
+</div>
+{% endblock %}

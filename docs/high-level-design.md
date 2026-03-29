@@ -10,20 +10,21 @@ We need a **local-first, project-based orchestrator** that treats AI agent sessi
 
 ## Goals
 
-1. **Project-based orchestration** — One project = one git repository (GitHub or any VCS provider). All orchestration is scoped to a project.
+1. **Project-based orchestration** — One project = one directory on disk (git repo, Obsidian vault, or any workspace). All orchestration is scoped to a project.
 2. **Worktree-isolated sessions** — Each agent session operates in its own `git worktree`, preventing conflicts and enabling parallel work on the same repo.
 3. **Task ticket system** — Inspired by Paperclip: every unit of work is a ticket with status, assigned agent, conversation thread, and audit trail. Atomic checkout prevents duplicate work.
-4. **Cross-device handoff** — Inspired by happy.engineering: seamlessly continue monitoring and interacting with agent sessions from a mobile device or another machine.
-5. **Agent-agnostic via ACP (Agent Client Protocol)** — Use the Agent Client Protocol (JetBrains/Zed standard — JSON-RPC over stdio, bridged to WebSocket) to connect to coding agents. This is the same protocol used by Marimo, Zed, and Neovim to connect to OpenCode, Claude Code, Codex, and Gemini. Agents are pluggable subprocess-based processes.
-6. **Local-first** — Desktop application that runs entirely on the developer's machine. No cloud accounts, no external dependencies for core functionality. Data stored in SQLite + git.
+4. **Agent-agnostic via HTTP** — Use the agent's HTTP API (e.g., `opencode serve --port X`) to connect to coding agents. Agents run as persistent background servers. The orchestrator communicates via REST/HTTP.
+5. **Local-first, packaged as a CLI tool** — Installable via `uvx opencode-orchestrator` (or `pip install`). Runs a local FastAPI server — no cloud accounts, no external dependencies for core functionality. Data stored in SQLite + git.
 
 ## Non-Goals
 
 - **Personas / role-based agent hierarchy** — No org charts or CEO agents. Flat task assignment model.
 - **Multi-user / team features** — Single developer use case for v1. No shared state across users.
-- **Cloud hosting** — No hosted version. The app runs locally; mobile access is via network relay.
-- **Agent implementation** — We orchestrate agents, we don't implement them. Agents are external subprocesses connected via ACP (Agent Client Protocol).
+- **Cloud hosting** — No hosted version. The app runs locally.
+- **Agent implementation** — We orchestrate agents, we don't implement them. Agents are external subprocesses connected via HTTP.
 - **CI/CD integration** — Not a build system. Agents can trigger CI, but we don't manage pipelines.
+- **Scheduled / recurring tasks** — Tasks run on-demand. Scheduling is a future enhancement.
+- **Cross-device handoff** — Local access only. Remote access is a future enhancement.
 
 ## Target Users
 
@@ -40,44 +41,43 @@ We need a **local-first, project-based orchestrator** that treats AI agent sessi
 │   │  View    │  │  Board   │  │  Monitor   │  │  Output │  │
 │   └──────────┘  └──────────┘  └────────────┘  └─────────┘  │
 └──────────────────────┬───────────────────────────────────────┘
-                       │ HTTP + WebSocket
-                       ▼
+                         │ HTTP
+                         ▼
 ┌──────────────────────────────────────────────────────────────┐
 │                  FastAPI Backend (local)                      │
 │                                                              │
 │  ┌──────────────┐  ┌──────────────┐  ┌───────────────────┐  │
 │  │   Project    │  │    Task      │  │     Session       │  │
 │  │   Manager    │  │   Engine     │  │     Manager       │  │
-│  │  (git repos  │  │  (tickets,   │  │  (worktrees,      │  │
-│  │   + config)  │  │   assign,    │  │   lifecycle,      │  │
-│  │              │  │   track)     │  │   output capture) │  │
+│  │  (dirs +     │  │  (tickets,   │  │  (worktrees,      │  │
+│  │   config)    │  │   assign,    │  │   lifecycle)      │  │
+│  │              │  │   track)     │  │                   │  │
 │  └──────────────┘  └──────────────┘  └───────────────────┘  │
 │                                                              │
-│  ┌──────────────┐  ┌──────────────┐  ┌───────────────────┐  │
-│  │  WebSocket   │  │     ACP      │  │    Tailscale      │  │
-│  │    Hub       │  │   Gateway    │  │    Funnel         │  │
-│  │ (real-time   │  │  (subprocess │  │  (HTTPS tunnel    │  │
-│  │  sync +      │  │   mgmt,      │  │   for mobile      │  │
-│  │  streaming)  │  │   stdio-ws)  │  │   handoff)        │  │
-│  └──────────────┘  └──────────────┘  └───────────────────┘  │
+│  ┌──────────────┐  ┌─────────────────────────────────────┐ │
+│  │    Agent     │  │              Worktree                 │ │
+│  │   Registry   │  │              Manager                  │ │
+│  │ (start/stop, │  │  (create, remove git worktrees)      │ │
+│  │   ping)      │  │                                     │ │
+│  └──────────────┘  └─────────────────────────────────────┘ │
 │                                                              │
 │  ┌──────────────────────────────────────────────────────┐   │
 │  │              SQLite (local storage)                   │   │
-│  │  projects | tasks | sessions | agent_registry | logs │   │
+│  │  projects | tasks | sessions | worktrees | agents   │   │
 │  └──────────────────────────────────────────────────────┘   │
 └──────────────────────────────────────────────────────────────┘
-                       │ ACP (JSON-RPC over stdio / WebSocket)
-                       ▼
+                         │ HTTP
+                         ▼
 ┌──────────────────────────────────────────────────────────────┐
-│              Agent Layer (subprocesses via ACP)               │
+│              Agent Layer (via opencode serve)                  │
 │                                                              │
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐ │
-│  │  OpenCode   │  │ Claude Code │  │  Codex / Gemini /   │ │
-│  │  (primary)  │  │             │  │  any ACP agent      │ │
+│  │  OpenCode   │  │ Claude Code │  │  any agent with     │ │
+│  │  (primary)  │  │             │  │  HTTP API           │ │
 │  └─────────────┘  └─────────────┘  └─────────────────────┘ │
 │        ↑                ↑                    ↑              │
-│     opencode acp    claude acp         <agent> acp          │
-│     (stdio)         (stdio)            (stdio)              │
+│   opencode serve   <agent> serve      <agent> serve         │
+│   (HTTP API)      (HTTP API)         (HTTP API)             │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -106,105 +106,113 @@ We need a **local-first, project-based orchestrator** that treats AI agent sessi
 - JSON files: No query capability, no ACID guarantees
 - TinyDB: Limited query language, less battle-tested
 
-### Decision 3: ACP (Agent Client Protocol) for Agent Communication
+### Decision 3: HTTP-based Agent Communication (via opencode serve)
 
-**Choice**: Use the Agent Client Protocol (ACP) — the JetBrains/Zed standard — for connecting to coding agents. This is the same protocol Marimo uses to connect to OpenCode, Claude Code, Codex, and Gemini.
+**Choice**: Use the `opencode serve` HTTP API for agent communication. Agents run as background servers (`opencode serve --port X`), and the orchestrator communicates via HTTP REST calls.
 
-**How it works**: Agents run as subprocesses speaking JSON-RPC over stdio. The orchestrator launches each agent in ACP mode (e.g., `opencode acp`, `claude code acp`) and communicates via stdin/stdout. For WebSocket-based consumers (like the frontend), a `stdio-to-ws` bridge exposes each agent on a dedicated port. Python ACP SDK available for implementation.
+**How it works**: 
+- Agent is started with `opencode serve --port <port>` 
+- Orchestrator creates sessions via `POST /session`
+- Messages sent via `POST /session/{id}/message`
+- Agent runs persistently until stopped
 
-**Rationale**: ACP is the emerging standard for editor-to-agent communication, adopted by Zed, Neovim, Marimo, and JetBrains. Using the same protocol means any agent that supports ACP works out of the box. Subprocess-based — fits local-first perfectly. No external servers needed.
+**Rationale**: `opencode serve` provides a full HTTP API with session management, message history, and streaming support. It's more robust for orchestrator use than short-lived stdio connections that exit after each request.
 
-**Alternatives considered**:
-- IBM ACP / A2A (agent-to-agent): Different protocol, designed for agent-to-agent not editor-to-agent; overkill for subprocess management
-- Raw HTTP/custom protocol: Reinventing the wheel, no ecosystem compatibility
-- MCP only: MCP is for agent-to-tool, not orchestrator-to-agent; complementary, not a replacement
-- gRPC: More performant but less developer-friendly, no existing agent support
+### Decision 4: Local Access Only (v1)
 
-### Decision 4: Tailscale Tunnel for Mobile Handoff
+**Choice**: For v1, the app is accessible only on localhost. Remote access via Tailscale or similar is a future enhancement.
 
-**Choice**: The FastAPI backend serves as both the local app server and a WebSocket relay. Mobile devices connect via **Tailscale Funnel** (or Tailscale mesh VPN) for secure access from anywhere on the internet. Tailscale is a required dependency, not optional.
-
-**Rationale**: The user needs to orchestrate agents from anywhere — coffee shop, phone on the go, another machine. Tailscale Funnel exposes the local FastAPI server to the internet over HTTPS with automatic TLS, authenticated by Tailscale identity. No port forwarding, no relay server infrastructure, no cloud hosting. The HTMX frontend is responsive and works on mobile browsers.
-
-**Alternatives considered**:
-- LAN-only: Too limiting; user explicitly needs internet-wide access
-- Dedicated relay server (happy.engineering style): Adds infrastructure to host and maintain
-- Cloudflare Tunnel: Good but Tailscale offers mesh VPN for device-to-device too
-- Native mobile app: High development cost, unnecessary when responsive web works
-- ngrok: Less integrated, no mesh VPN, less secure identity model
+**Rationale**: Keep v1 simple and focused on core orchestration. Remote access adds complexity (TLS, authentication, network resilience) that can be added later.
 
 ### Decision 5: HTMX + Alpine.js + CSS for Frontend
 
-**Choice**: Server-rendered HTML via HTMX for most interactions, Alpine.js for small reactive elements (e.g., dropdowns, modals), vanilla CSS for styling. Minimal JavaScript.
+### Decision 4: HTMX + Alpine.js + CSS for Frontend
 
-**Rationale**: HTMX keeps the frontend simple — FastAPI renders HTML fragments, HTMX swaps them in. No build step, no node_modules, no framework churn. WebSocket extension for HTMX handles real-time agent output streaming. Alpine.js fills the gap for client-side interactivity without a full framework.
+**Choice**: Server-rendered HTML via HTMX for most interactions, Alpine.js for small reactive elements (e.g., dropdowns, modals), vanilla CSS for styling. Minimal JavaScript. Loaded via CDN for simplicity.
+
+**Rationale**: HTMX keeps the frontend simple — FastAPI renders HTML fragments, HTMX swaps them in. No build step, no node_modules, no framework churn. Alpine.js fills the gap for client-side interactivity without a full framework.
 
 **Alternatives considered**:
 - React/Vue SPA: Adds build complexity, second language ecosystem, overkill for this UI
-- Pure HTMX (no JS): Some interactions (live output streaming, drag-and-drop) need a thin JS layer
+- Pure HTMX (no JS): Some interactions need a thin JS layer
 - Svelte: Nice but adds compilation step, smaller ecosystem
 
-### Decision 6: Pixi for Project Dependencies
+### Decision 5: Pixi for Project Dependencies
 
 **Choice**: Use pixi for managing Python dependencies and development environment.
 
 **Rationale**: User preference. Pixi handles conda + pip packages, lockfiles, and cross-platform reproducibility. Single `pixi.toml` for the project.
 
-### Decision 7: Desktop App Delivery — Browser Tab (v1), pywebview (v2)
-
-**Choice**: For v1, the app is a FastAPI server that the user opens in their browser. For v2, wrap in pywebview for a native-feeling desktop window.
-
-**Rationale**: Browser-tab approach is zero-friction to develop and test. pywebview can be added later as a thin wrapper without changing the architecture. The HTMX frontend is identical in both cases.
-
-**Alternatives considered**:
-- Tauri: Rust-based, powerful but adds significant build complexity for a Python project
-- Electron: Heavy, pulls in Node.js ecosystem
-- pywebview from day 1: Adds debugging complexity early; browser DevTools are more accessible
-
 ## Data Model Overview
 
 ```
 Project
-├── id, name, repo_path, vcs_url, created_at
+├── id, name, path, has_git, vcs_url, default_branch
+├── created_at, updated_at
 │
 ├── Worktree
 │   ├── id, project_id, branch_name, path, created_at
-│   ├── status (active|merged|archived)
+│   ├── status (active|archived)
 │   │
-│   ├── Task (ticket) — multiple tasks per worktree
+│   ├── Task (ticket) — optional worktree association
 │   │   ├── id, worktree_id, title, description, status
-│   │   ├── assigned_agent_id, priority, created_at, updated_at
+│   │   ├── assigned_agent_id, priority
+│   │   ├── schedule_cron, schedule_enabled, schedule_id
+│   │   ├── retry_count, max_retries
+│   │   ├── created_at, updated_at, completed_at
 │   │   └── TaskMessage (conversation thread)
-│   │       ├── id, task_id, role (user|agent|system), content, timestamp
-│   │       └── metadata (token usage, tool calls, etc.)
+│   │       ├── id, task_id, role (user|agent), content, timestamp
+│   │       └── metadata (optional)
+│   │   └── TaskLog (audit trail)
+│   │       ├── id, task_id, event, from_status, to_status
+│   │       ├── details (JSON), timestamp
 │   │
-│   └── Session — one active session per worktree at a time
-│       ├── id, worktree_id, agent_id
-│       ├── status (running|paused|completed|failed)
-│       ├── started_at, ended_at, pid
-│       └── output_log_path
+│   └── Session — may have multiple per task
+│       ├── id, worktree_id, agent_id, task_id
+│       ├── status (spawned|running|stopping|completed|failed)
+│       ├── pid, started_at, ended_at
+│       ├── output_log_path, exit_code, error_message
 │
 └── AgentRegistry
-    ├── id, name, acp_command (e.g., "opencode acp")
-    ├── capabilities (JSON), status (online|offline)
-    └── config (JSON)
+    ├── id, name
+    ├── command (e.g., "opencode serve --port 4000")
+    ├── port (e.g., 4000)
+    ├── cwd (working directory for agent)
+    ├── capabilities (JSON), status (available|offline|error|starting)
+    ├── pid (process ID when running)
+    ├── config (JSON), last_seen, created_at
 ```
 
 ## Risks and Mitigations
 
 | Risk | Mitigation |
 |------|------------|
-| ACP ecosystem still evolving | ACP is adopted by JetBrains, Zed, Marimo — momentum is strong; keep agent interface thin regardless |
-| Tailscale as hard dependency | Tailscale is free for personal use; document manual alternatives (ngrok, Cloudflare Tunnel) for users who can't use it |
-| Git worktree limits on large repos | Monitor worktree count; auto-cleanup completed sessions; warn at threshold |
-| WebSocket reliability on mobile | Implement reconnection with message queue; HTMX has built-in reconnect for SSE |
-| Agent processes crash or hang | Heartbeat monitoring with configurable timeout; auto-fail stuck sessions |
+| Agent processes crash or hang | Add heartbeat monitoring with configurable timeout; auto-fail stuck sessions (future) |
+| Git worktree limits on large repos | Monitor worktree count; warn at threshold |
 | SQLite write contention under heavy load | WAL mode + single-writer pattern; sufficient for single-user |
+
+## Implementation Status (v0.1.0)
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| Project Management | ✅ Implemented | Full CRUD, git detection |
+| Task Engine | ✅ Implemented | CRUD, auto-assign, message passing |
+| Agent Gateway | ✅ Implemented | Registration, start/stop, HTTP communication |
+| Session Manager | ✅ Implemented | Basic session management, cancel |
+| Worktrees | ✅ Implemented | Git worktree creation/removal |
+| Frontend | ✅ Implemented | Basic HTMX pages |
+| Scheduler | ⏳ Not implemented | Planned for future |
+| SSE Output Streaming | ⏳ Not implemented | Planned for future |
+| WebSocket Chat | ⏳ Not implemented | Planned for future |
+| Heartbeat Monitoring | ⏳ Not implemented | Planned for future |
+| Tailscale Integration | ⏳ Not implemented | Planned for future |
 
 ## Related Designs
 
 - [Project Management LLD](./designs/project-management/LLD.md)
 - [Task Engine LLD](./designs/task-engine/LLD.md)
 - [Session Manager LLD](./designs/session-manager/LLD.md)
-- [ACP Agent Gateway LLD](./designs/acp-gateway/LLD.md)
-- [Frontend & Mobile Handoff LLD](./designs/frontend/LLD.md)
+- [Agent Gateway LLD](./designs/acp-gateway/LLD.md)
+- [Worktree Manager LLD](./designs/session-manager/LLD.md)
+- [Frontend LLD](./designs/frontend/LLD.md)
+- [EARS](./designs/ears.md)

@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OpenCode Orchestrator</title>
+    <script src="https://unpkg.com/htmx.org@2.0.0"></script>
+    <script defer src="https://unpkg.com/alpinejs@3.x.x"></script>
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+    <nav class="navbar">
+        <div class="nav-brand">OpenCode Orchestrator</div>
+        <div class="nav-links">
+            <a href="/projects" class="nav-link">Projects</a>
+            <a href="/settings" class="nav-link">Settings</a>
+        </div>
+    </nav>
+
+    <main class="container" id="main">
+        {% block content %}{% endblock %}
+    </main>
+
+    <script>
+        document.addEventListener('alpine:init', () => {
+            Alpine.store('modal', {
+                open(name) {
+                    this.active = name;
+                    document.body.classList.add('modal-open');
+                },
+                close(name) {
+                    this.active = null;
+                    document.body.classList.remove('modal-open');
+                },
+                isOpen(name) {
+                    return this.active === name;
+                },
+                active: null
+            });
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,133 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div x-data="{ showModal: false }" x-init="$watch('showModal', value => value ? document.body.classList.add('modal-open') : document.body.classList.remove('modal-open'))">
+<div class="page-header">
+    <h1>Settings</h1>
+</div>
+
+<div class="settings-section">
+    <h2>Agent Connections</h2>
+    <p class="settings-desc">Configure agents by providing the command to start them and the port they'll listen on.</p>
+    
+    <div class="agent-list">
+        {% for agent in agents %}
+        <div class="agent-card">
+            <div class="agent-header">
+                <h3>{{ agent.name }}</h3>
+                <span class="badge badge-{{ agent.status }}">{{ agent.status }}</span>
+            </div>
+            <p class="agent-command">{{ agent.acp_command }}</p>
+            {% if agent.capabilities %}
+            <p class="agent-capabilities">Capabilities: {{ agent.capabilities }}</p>
+            {% endif %}
+            <div class="agent-actions">
+                {% if agent.status == 'available' %}
+                <button class="btn btn-sm" onclick="sendMessage('{{ agent.id }}')">Message</button>
+                {% else %}
+                <button class="btn btn-sm" onclick="startAgent('{{ agent.id }}')">Start</button>
+                {% endif %}
+                <button class="btn btn-sm" onclick="testAgent('{{ agent.id }}')">Test</button>
+                <button class="btn btn-sm" onclick="deleteAgent('{{ agent.id }}')">Delete</button>
+            </div>
+        </div>
+        {% else %}
+        <p class="empty-state">No agents configured. Add one to get started.</p>
+        {% endfor %}
+    </div>
+
+    <button class="btn btn-primary" @click="showModal = true" style="margin-top: 1rem;">+ Add Agent</button>
+</div>
+
+<script>
+function startAgent(id) {
+    fetch('/api/agents/' + id + '/start', { method: 'POST' })
+        .then(res => res.json())
+        .then(data => {
+            if (data.status === 'started') {
+                window.location.reload();
+            } else {
+                alert('Failed to start: ' + (data.message || 'unknown error'));
+            }
+        })
+        .catch(err => alert('Failed to start agent'));
+}
+
+function testAgent(id) {
+    fetch('/api/agents/' + id + '/ping', { method: 'POST' })
+        .then(res => res.json())
+        .then(data => {
+            if (data.status === 'available') {
+                window.location.reload();
+            } else {
+                alert('Agent not available: ' + (data.message || 'unknown error'));
+            }
+        })
+        .catch(err => alert('Failed to test agent'));
+}
+
+function sendMessage(id) {
+    const msg = prompt('Enter message to send to agent:');
+    if (!msg) return;
+    
+    fetch('/api/agents/' + id + '/message', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({message: msg})
+    })
+    .then(res => res.json())
+    .then(data => {
+        if (data.status === 'ok') {
+            alert('Agent response: ' + data.message);
+        } else {
+            alert('Error: ' + (data.message || 'unknown error'));
+        }
+    })
+    .catch(err => alert('Failed to send message: ' + err));
+}
+
+function deleteAgent(id) {
+    if (!confirm('Delete this agent?')) return;
+    fetch('/api/agents/' + id, { method: 'DELETE' })
+        .then(res => {
+            if (res.ok) window.location.reload();
+            else alert('Failed to delete agent');
+        });
+}
+</script>
+
+<div x-show="showModal" class="modal-backdrop" @click.self="showModal = false">
+    <div class="modal">
+        <h2>Add Agent</h2>
+        <form @submit.prevent="
+            const form = $event.target;
+            const data = new FormData(form);
+            const response = await fetch('/api/agents', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(Object.fromEntries(data))
+            });
+            if (response.ok) {
+                window.location.reload();
+            } else {
+                alert('Failed to add agent');
+            }
+        ">
+            <div class="form-group">
+                <label for="name">Name</label>
+                <input type="text" id="name" name="name" placeholder="e.g., opencode" required>
+            </div>
+            <div class="form-group">
+                <label for="port">Port</label>
+                <input type="number" id="port" name="port" placeholder="e.g., 3023" value="3000" required>
+                <small style="color: var(--text-muted);">Port for the agent to listen on</small>
+            </div>
+            <div class="modal-actions">
+                <button type="button" class="btn btn-secondary" @click="showModal = false">Cancel</button>
+                <button type="submit" class="btn btn-primary">Add</button>
+            </div>
+        </form>
+    </div>
+</div>
+</div>
+{% endblock %}

@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div x-data="{ showModal: false }" x-init="$watch('showModal', value => value ? document.body.classList.add('modal-open') : document.body.classList.remove('modal-open'))">
+<div class="page-header">
+    <h1>Projects</h1>
+    <button class="btn btn-primary" @click="showModal = true">+ New</button>
+</div>
+
+    <div class="project-list">
+        {% for project in projects %}
+        <div class="project-card">
+            <div class="project-header">
+                <h3>{{ project.name }}</h3>
+                {% if project.has_git %}
+                <span class="badge badge-git">git</span>
+                {% endif %}
+            </div>
+            <p class="project-path">{{ project.path }}</p>
+            {% if project.vcs_url %}
+            <p class="project-vcs">{{ project.vcs_url }}</p>
+            {% endif %}
+            <div class="project-meta">
+                <a href="/projects/{{ project.id }}" class="btn btn-sm">Tasks</a>
+                <a href="/projects/{{ project.id }}/sessions" class="btn btn-sm">Sessions</a>
+            </div>
+        </div>
+        {% else %}
+        <p class="empty-state">No projects registered. Add one to get started.</p>
+        {% endfor %}
+    </div>
+
+    <div x-show="showModal" class="modal-backdrop" @click.self="showModal = false">
+        <div class="modal">
+            <h2>Register Project</h2>
+            <form @submit.prevent="
+                const form = $event.target;
+                const path = form.path.value.trim();
+                if (!path) {
+                    alert('Please enter a project path');
+                    return;
+                }
+                const data = { path: path, name: form.name.value };
+                const response = await fetch('/api/projects', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(data)
+                });
+                if (response.ok) {
+                    window.location.reload();
+                } else {
+                    alert('Failed to register project');
+                }
+            ">
+                <div class="form-group">
+                    <label for="path">Project Path</label>
+                    <input type="text" id="path" name="path" placeholder="~/Documents/project or /absolute/path" required>
+                    <small style="color: var(--text-muted);">Use ~ for home directory</small>
+                </div>
+                <div class="form-group">
+                    <label for="name">Name (optional)</label>
+                    <input type="text" id="name" name="name">
+                </div>
+                <div class="modal-actions">
+                    <button type="button" class="btn btn-secondary" @click="showModal = false">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Register</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+{% endblock %}
