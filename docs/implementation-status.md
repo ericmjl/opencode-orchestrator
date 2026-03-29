@@ -88,76 +88,75 @@ opencode_orchestrator/
 
 ## Completed
 
- ✅
-- Project CRUD (create, list, detail, delete)
-- Task CRUD (create, list, detail, run, delete, send-message)
-- Agent registration (register, deregister, heartbeat)
-- Session management (list, cancel)
-- Worktree management (create, list, delete)
-- Frontend pages (project list, task list, task detail with chat)
-- Task auto-execution on creation (creates op session, sends to agent)
- background)
-- Agent message passing with streaming response read (httpx `client.stream()` + `aiter_bytes()`)
-- Context preservation across follow-up messages (session stays `running` after reply)
- so next message reuses same session)
-- Status badge updates (running/completed) without page refresh (polling-based)
-- Optimistic user message rendering (appears immediately on send)
-- Session reuse for existing `running` sessions for follow-up messages on same task)
+- [x] Project CRUD (create, list, detail, delete)
+- [x] Task CRUD (create, list, detail, run, delete, send-message)
+- [x] Agent registration (register, deregister, Heartbeat)
+- [x] Session management (List, Cancel)
+- [x] Worktree management (Create, List, Delete)
+- [x] Frontend pages (Project List, Task List, Task Detail with chat)
+- [x] Task auto-execution on creation (Creates Agent session, Sends to agent in background)
+- [x] Agent message passing with streaming response read (httpx `client.stream()` + `aiter_bytes()`)
+- [x] Context preservation across follow-up messages (Session stays `running` after reply)
+- [x] Status badge updates (Running/Completed) without page refresh (polling-based)
+- [x] Optimistic user Message rendering (Appears immediately on Send)
+- [x] Session Reuse for existing `Running` sessions for follow-up messages
+- [x] Stale Task Recovery on Startup (Reset `Running` tasks back to `Created` on server restart)
+- [x] Agent Session Liveness Probe (GET `/session/{id}` before reusing)
+- [x] Polling-based message delivery (replaced SSE)
+- [x] Count-based dedup (`knownMessageCount`) to avoid duplicate messages
+- [x] Dead SSE endpoint removed from `tasks.py`
 
 ## Known Bugs / Issues
 
- Need Fixing
+### 1. Agent sessions can become unresponsive after many messages
 
-### 1. Agent sessions get stuck (unresponsive)
-After many messages exchanges on the session, the agent stops responding to `/session/{id}/message`. The `httpx` streaming read hangs forever with 0 bytes received.
+After several exchanges on the same session, the agent may stop responding to `/session/{id}/message`.
+ The httpx streaming read hangs forever. The liveness probe (`probe_agent_session`) was mitigate this by detecting dead sessions before reusing them.
+ If you probe fails, a new session is created.
 
- Root cause unknown (possibly context window exhaustion on opencode side but the response body never arrives. Temporary workaround: close the session in DB (`status = completed`) and let `send-message` create a fresh session.
+### 2. Polling timeout (no Max Timeout)
 
-### 2. Duplicate user messages in chat
-The polling-based JS uses `knownMessageCount` (count-based dedup) to skip user messages that were already rendered optimistically. This works in most cases, but may fail if messages are DB have non-sequential timestamps ordering vs server-rendered order. Not yet confirmed.
+The `setInterval` polling runs indefinitely until an assistant reply arrives. If the agent never responds (e.g. crashes), the polling continues forever.
+ A max timeout (e.g. 2 minutes) should be added to stop polling and re-enable the Send button.
 
- needs testing with edge cases.
+### 3. `datetime.utcnow()` is Deprecated
 
- **File**: `opencode_orchestrator/templates/pages/task-detail.html:206-207`
-
-### 3. Task status may show stale `running` forever
-If background task crashes (e.g. from server reload via `asyncio.CancelledError`), the task stays `running` in DB but but no cleanup mechanism exists to recover from this. Need: add a startup task that checks for stale `running` tasks (older than N minutes) and reset to `created`.
-
-### 4. SSE endpoint still exists but unused
-The `GET /stream` SSE endpoint (`opencode_orchestrator/routers/tasks.py:338-378`) is still registered and functional. It was replaced by polling in the frontend but but the endpoint itself still exists and It should be either removed or kept for a fallback. The SSE endpoint has issues:
- replays old messages on reconnect, uses UUID string comparison for dedup (broken, fixed with timestamp comparison but that also broke), never worked reliably with opencode agent (agent returns 200 but streams body forever).
+`now()` in `models/database.py` uses `datetime.datetime.utcnow()` which is deprecated in Python 3.12+.
+ Should be updated to `datetime.now(datetime.UTC)`.
 
 ## What Needs to Be Done Next
 
- Next Steps
+### Priority 1: Fix Known Bugs
 
-### Priority 1: Fix known bugs above
-- **Stale `running` task recovery**: Add a startup task or scans for tasks with `status = running` and `updated_at` older than 5 minutes, reset to `created` or mark as `failed`. This prevents tasks from being stuck in `running` forever if the background task crashes.
-- **Agent session stuck detection**: Before reusing a `running` session, probe the agent with a lightweight request (e.g. `GET /session/{id}`) to verify it the session still exists and is responsive. If not, create a fresh session.
- Currently, if the opencode session dies or becomes unresponsive, messages are silently lost.
-- **Remove unused SSE endpoint**: The `GET /{project_id}/tasks/{task_id}/stream` endpoint in `tasks.py` is dead code. Remove the `task_status` event logic since the SSE generator. The frontend no longer uses it SSE.
- keeping it endpoint around adds confusion.
-
- Remove `since` param from route signature too.
-
- **File**: `opencode_orchestrator/routers/tasks.py:338-378`
+- **Add Polling Timeout in JS**: Stop polling after 2 minutes and re-enable Send button.
+  **File**: `opencode_orchestrator/templates/pages/task-detail.html` (sendMessage function)
+- **Fix `datetime.utcnow()` deprecation**: Update `now()` in `models/database.py`.
+  **File**: `opencode_orchestrator/models/database.py`
 
 ### Priority 2: Testing
- Fix bugs, then write tests to Verify:
-- Full message lifecycle (create task → agent responds → follow-up message → agent responds)
-- Status badge transitions (completed → running → completed)
+
+Write tests to verify:
+- Full message lifecycle (Create task → Agent responds → Follow-up message → Agent responds)
+- Status badge transitions (Completed → Running → Completed)
 - Duplicate message prevention
 - Stale session recovery
 - Context preservation across messages in same session
- Use the test framework in `tests/` directory (see `tests/test_e2e.py` and `tests/test_frontend.py` as starting points).
 
- Agent mock server on port 4000 that required.
+Test framework already in `tests/`. Agent mock server on port 4000 required.
 
-### Priority 3: Architecture improvements
-- **Pixi task runner**: Add a `pixi task` for run the orchestrator server so so `pixi task run` for tests. Currently started manually.
-- **Config file**: Move hardcoded port (8627) and agent port (4000) to a config file or environment variables. Current setup is fragile.
-- **Error handling in background task**: The `send_task_to_agent_background` function has bare `except` blocks with logging only. Should add retry logic with exponential backoff for transient failures.
-- **Message timestamp ordering**: Verify that `now()` (using `datetime.utcnow()().isoformat()`) produces consistent ordering. This was flagged as deprecated in Python 3.12+.
+### Priority 3: Architecture Improvements
+
+- **Pixi task runner**: Add a `pixi task` to run the orchestrator server.
+- **Config file**: Move hardcoded ports (8627, 4000) to config or env vars.
+- **Error handling**: Add retry logic with exponential backoff in `send_task_to_agent_background`.
+- **Message timestamp ordering**: Verify `now()` produces consistent ordering.
+
+### Priority 4: Future Features (from HLD, Not Yet Implemented)
+
+- Worktree management UI
+- Scheduler (cron-based recurring tasks)
+- Tailscale integration (remote access)
+- Multi-user/team features
 
 ### Priority 4: Future features (from HLD, not yet implemented)
 - Worktree management (create/list/delete worktrees via UI)
