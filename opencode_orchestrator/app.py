@@ -18,7 +18,32 @@ logging.basicConfig(
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
+    await recover_stale_tasks()
     yield
+
+
+async def recover_stale_tasks():
+    from opencode_orchestrator.models import get_db, now
+
+    async for db in get_db():
+        rows = await db.execute("SELECT id FROM tasks WHERE status = 'running'")
+        stale = await rows.fetchall()
+        if stale:
+            timestamp = now()
+            for row in stale:
+                task_id = row[0]
+                await db.execute(
+                    "UPDATE tasks SET status = 'created', updated_at = ? WHERE id = ?",
+                    (timestamp, task_id),
+                )
+                await db.execute(
+                    "UPDATE sessions SET status = 'completed', ended_at = ? WHERE task_id = ? AND status = 'running'",
+                    (timestamp, task_id),
+                )
+            await db.commit()
+            logging.getLogger(__name__).info(
+                f"Recovered {len(stale)} stale running tasks on startup"
+            )
 
 
 app = FastAPI(title="OpenCode Orchestrator", version="0.1.0", lifespan=lifespan)

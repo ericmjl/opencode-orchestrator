@@ -2,14 +2,62 @@ import uuid
 import asyncio
 import json
 import logging
+from datetime import datetime, timezone as tz
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
 
 from opencode_orchestrator.models import get_db, row_to_dict, now
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+async def recover_stale_running_tasks():
+    now_iso = datetime.now(tz.utc).isoformat()
+    async for db in get_db():
+        rows = await db.execute(
+            "SELECT id FROM tasks WHERE status = 'running' AND updated_at < ?",
+            (now_iso,),
+        )
+        stale = await rows.fetchall()
+        if stale:
+            for row in stale:
+                task_id = row[0]
+                await db.execute("UPDATE tasks SET status = 'failed', WHERE id = ?", (task_id,))
+                await db.execute(
+                    "UPDATE sessions SET status = 'completed', ended_at = ? WHERE task_id = ? AND status = 'running'",
+                    (now_iso, task_id),
+                )
+            await db.commit()
+            logger.info(f"Recovered {len(stale)} stale running tasks on startup")
+
+
+async def _probe_session(port: int, session_id: str) -> bool:
+    import httpx
+
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                f"http://127.0.0.1:{port}/session/{session_id}",
+                timeout=httpx.Timeout(5.0),
+            )
+            return resp.status_code == 200
+    except Exception:
+        return False
+
+
+async def probe_agent_session(session_id: str, port: int) -> bool:
+    import httpx
+
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                f"http://127.0.0.1:{port}/session/{session_id}",
+                timeout=httpx.Timeout(5.0),
+            )
+            return resp.status_code == 200
+    except Exception:
+        return False
 
 
 async def send_task_to_agent_background(
@@ -335,12 +383,6 @@ async def get_task_messages(project_id: str, task_id: str):
 
     return {"messages": messages}
 
-
-@router.get("/{project_id}/tasks/{task_id}/stream")
-async def stream_task_messages(project_id: str, task_id: str, since: str | None = None):
-    from fastapi.responses import StreamingResponse
-    import asyncio
-
     async def event_generator():
         last_timestamp = since
         last_status = None
@@ -502,6 +544,45 @@ async def send_task_message_v2(project_id: str, task_id: str, data: dict):
                 return {"status": "error", "message": "Agent not found"}
 
             a = row_to_dict(agent)
+            port = a["port"]
+
+            alive = await probe_agent_session(session_id, port)
+            if not alive:
+                logger.warning(f"Session {session_id} unresponsive, closing and creating fresh")
+                ts = now()
+                await db.execute(
+                    "UPDATE sessions SET status = 'completed', ended_at = ? WHERE id = ?",
+                    (ts, session_id),
+                )
+                await db.commit()
+
+                fresh = await db.execute(
+                    "SELECT * FROM agent_registry WHERE status = 'available' LIMIT 1"
+                )
+                fresh_agent = await fresh.fetchone()
+                if not fresh_agent:
+                    return {"status": "error", "message": "Session dead and no available agents"}
+                fa = row_to_dict(fresh_agent)
+
+                async with httpx.AsyncClient() as client:
+                    resp = await client.post(
+                        f"http://127.0.0.1:{fa['port']}/session",
+                        json={"title": t["description"][:50]},
+                    )
+                    if resp.status_code != 200:
+                        return {"status": "error", "message": "Failed to create fresh session"}
+
+                    new_sess = resp.json()
+                    session_id = new_sess.get("id")
+                    ts2 = now()
+                    await db.execute(
+                        """INSERT INTO sessions (id, project_id, task_id, agent_id, status, started_at)
+                           VALUES (?, ?, ?, ?, 'running', ?)""",
+                        (session_id, project_id, task_id, fa["id"], ts2),
+                    )
+                    await db.commit()
+                    a = fa
+                    port = a["port"]
 
             # Mark task as running so the UI status badge updates immediately.
             timestamp = now()
