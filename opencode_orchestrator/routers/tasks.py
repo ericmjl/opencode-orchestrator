@@ -2,14 +2,35 @@ import uuid
 import asyncio
 import json
 import logging
-from fastapi import APIRouter, HTTPException
+import os
+from pathlib import Path
+
+from fastapi import APIRouter, Form, HTTPException, Request
+from fastapi.responses import HTMLResponse
+from jinja2 import Environment, FileSystemLoader
 from pydantic import BaseModel
 
 from opencode_orchestrator.models import get_db, row_to_dict, now
+from opencode_orchestrator.orchestrator_state import transition_task_status
+from opencode_orchestrator.routers.agents import get_available_models
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+templates = Environment(loader=FileSystemLoader(Path(__file__).parent.parent / "templates"))
+_MESSAGE_SEMAPHORE = asyncio.Semaphore(int(os.environ.get("OC_MAX_CONCURRENT_TASKS", "4")))
+
+
+async def update_agent_cwd(agent_id: str, project_id: str):
+    async for db in get_db():
+        proj = await db.execute("SELECT path FROM projects WHERE id = ?", (project_id,))
+        proj_row = await proj.fetchone()
+        if proj_row:
+            await db.execute(
+                "UPDATE agent_registry SET cwd = ? WHERE id = ?",
+                (proj_row[0], agent_id),
+            )
+            await db.commit()
 
 
 async def probe_agent_session(session_id: str, port: int) -> bool:
@@ -37,95 +58,97 @@ async def send_task_to_agent_background(
 
     logger.info(f"Sending message to agent at port {port}, session {agent_session_id}")
     try:
-        async with httpx.AsyncClient() as client:
-            async with client.stream(
-                "POST",
-                f"http://127.0.0.1:{port}/session/{agent_session_id}/message",
-                json={"parts": [{"type": "text", "text": description}]},
-                timeout=httpx.Timeout(connect=10.0, read=300.0, write=10.0, pool=10.0),
-            ) as message_resp:
-                logger.info(f"Agent response status: {message_resp.status_code}")
+        async with _MESSAGE_SEMAPHORE:
+            async with httpx.AsyncClient() as client:
+                async with client.stream(
+                    "POST",
+                    f"http://127.0.0.1:{port}/session/{agent_session_id}/message",
+                    json={"parts": [{"type": "text", "text": description}]},
+                    timeout=httpx.Timeout(connect=15.0, read=600.0, write=30.0, pool=30.0),
+                ) as message_resp:
+                    logger.info(f"Agent response status: {message_resp.status_code}")
 
-                if message_resp.status_code == 200:
-                    body = b""
-                    async for chunk in message_resp.aiter_bytes():
-                        body += chunk
+                    if message_resp.status_code == 200:
+                        body = b""
+                        async for chunk in message_resp.aiter_bytes():
+                            body += chunk
 
-                    try:
-                        result = json.loads(body)
-                        parts = result.get("parts", [])
-                        response_text = ""
-                        pending_questions = []
-                        for part in parts:
-                            if part.get("type") == "text":
-                                response_text += part.get("text", "")
-                            elif part.get("type") == "thought":
-                                response_text += part.get("thought", "")
-                            elif part.get("type") in ("tool_use", "question", "permission"):
-                                pending_questions.append(part)
+                        try:
+                            result = json.loads(body)
+                            parts = result.get("parts", [])
+                            response_text = ""
+                            pending_questions = []
+                            pending_permissions = []
+                            for part in parts:
+                                if part.get("type") == "text":
+                                    response_text += part.get("text", "")
+                                elif part.get("type") == "thought":
+                                    response_text += part.get("thought", "")
+                                elif part.get("type") == "permission":
+                                    pending_permissions.append(part)
+                                elif part.get("type") in ("tool_use", "question"):
+                                    pending_questions.append(part)
 
-                        logger.info(f"Agent response text: {response_text[:100]}...")
+                            logger.info(f"Agent response text: {response_text[:100]}...")
 
-                        async for db in get_db():
-                            msg_timestamp = now()
+                            async for db in get_db():
+                                msg_timestamp = now()
+                                # Assistant text is persisted exclusively through OpenCode sqlite
+                                # history ingestion in session_sync to avoid duplicate messages.
 
-                            if response_text:
-                                await db.execute(
-                                    """INSERT INTO task_messages (id, task_id, role, content, timestamp)
-                                       VALUES (?, ?, 'assistant', ?, ?)""",
-                                    (
-                                        str(uuid.uuid4()),
+                                for q in pending_questions + pending_permissions:
+                                    q_id = str(uuid.uuid4())
+                                    q_type = q.get("type", "unknown")
+                                    q_content = (
+                                        q.get("text")
+                                        or q.get("question")
+                                        or q.get("input", {}).get("prompt", "")
+                                        or json.dumps(q)
+                                    )
+                                    q_metadata = json.dumps(q)
+                                    await db.execute(
+                                        """INSERT INTO questions (id, session_id, task_id, question_type, content, metadata, status, created_at)
+                                           VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)""",
+                                        (
+                                            q_id,
+                                            agent_session_id,
+                                            task_id,
+                                            q_type,
+                                            q_content[:2000],
+                                            q_metadata,
+                                            msg_timestamp,
+                                        ),
+                                    )
+                                    logger.info(f"Stored pending question {q_id} of type {q_type}")
+
+                                if pending_permissions:
+                                    await transition_task_status(
                                         task_id,
-                                        response_text[:5000],
-                                        msg_timestamp,
-                                    ),
-                                )
-
-                            for q in pending_questions:
-                                q_id = str(uuid.uuid4())
-                                q_type = q.get("type", "unknown")
-                                q_content = (
-                                    q.get("text")
-                                    or q.get("question")
-                                    or q.get("input", {}).get("prompt", "")
-                                    or json.dumps(q)
-                                )
-                                q_metadata = json.dumps(q)
-                                await db.execute(
-                                    """INSERT INTO questions (id, session_id, task_id, question_type, content, metadata, status, created_at)
-                                       VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)""",
-                                    (
-                                        q_id,
-                                        agent_session_id,
+                                        "waiting_permission",
+                                        "agent requested permission",
+                                    )
+                                elif pending_questions:
+                                    await transition_task_status(
                                         task_id,
-                                        q_type,
-                                        q_content[:2000],
-                                        q_metadata,
-                                        msg_timestamp,
-                                    ),
-                                )
-                                logger.info(f"Stored pending question {q_id} of type {q_type}")
+                                        "waiting_question",
+                                        "agent asked a question",
+                                    )
+                                    logger.info(f"Task {task_id} is waiting for user input")
+                                # Don't mark task as completed here - let the session-status poll
+                                # detect when the session actually finishes
 
-                            if pending_questions:
-                                await db.execute(
-                                    "UPDATE tasks SET status = 'waiting', updated_at = ? WHERE id = ?",
-                                    (msg_timestamp, task_id),
-                                )
-                                logger.info(f"Task {task_id} is waiting for user input")
-                            else:
-                                await db.execute(
-                                    "UPDATE tasks SET status = 'completed', completed_at = ?, updated_at = ? WHERE id = ?",
-                                    (msg_timestamp, msg_timestamp, task_id),
-                                )
-                                logger.info(f"Marked task {task_id} as completed")
-
-                            await db.commit()
-                    except Exception as e:
-                        logger.error(
-                            f"Error processing agent response: {e!r}, body: {body[:200]!r}"
-                        )
-                else:
-                    logger.error(f"Agent returned status {message_resp.status_code}")
+                                await db.commit()
+                        except Exception as e:
+                            logger.error(
+                                f"Error processing agent response: {e!r}, body: {body[:200]!r}"
+                            )
+                    else:
+                        logger.error(f"Agent returned status {message_resp.status_code}")
+                        try:
+                            error_body = await message_resp.aread()
+                            logger.error(f"Agent error response body: {error_body[:500]!r}")
+                        except Exception:
+                            pass
     except Exception as e:
         logger.error(f"Background task failed for task {task_id}: {e!r}")
 
@@ -165,6 +188,58 @@ class TaskResponse(BaseModel):
     created_at: str
     updated_at: str
     completed_at: str | None
+
+
+async def render_task_board_fragment(project_id: str) -> str:
+    """Render task board snippet with OOB sidebar badge update."""
+    async for db in get_db():
+        proj_row = await db.execute("SELECT * FROM projects WHERE id = ?", (project_id,))
+        project = await proj_row.fetchone()
+        if not project:
+            return "<div>Project not found</div>"
+        project = row_to_dict(project)
+
+        running_rows = await db.execute(
+            "SELECT * FROM tasks WHERE project_id = ? AND archived = 0 AND status IN ('running', 'waiting_question', 'waiting_permission') ORDER BY priority ASC, created_at ASC",
+            (project_id,),
+        )
+        running_tasks = [row_to_dict(r) for r in await running_rows.fetchall()]
+
+        completed_rows = await db.execute(
+            "SELECT * FROM tasks WHERE project_id = ? AND archived = 0 AND status = 'completed' ORDER BY updated_at DESC",
+            (project_id,),
+        )
+        completed_tasks = [row_to_dict(r) for r in await completed_rows.fetchall()]
+
+        failed_rows = await db.execute(
+            "SELECT * FROM tasks WHERE project_id = ? AND archived = 0 AND status = 'failed' ORDER BY updated_at DESC",
+            (project_id,),
+        )
+        failed_tasks = [row_to_dict(r) for r in await failed_rows.fetchall()]
+
+        unread_row = await db.execute(
+            "SELECT COUNT(*) AS cnt FROM tasks WHERE project_id = ? AND archived = 0 AND status = 'completed' AND is_new = 1",
+            (project_id,),
+        )
+        completed_unread = (await unread_row.fetchone())["cnt"]
+
+        sidebar_unread_row = await db.execute(
+            "SELECT COUNT(*) AS cnt FROM tasks WHERE project_id = ? AND archived = 0 AND is_new = 1",
+            (project_id,),
+        )
+        sidebar_unread = (await sidebar_unread_row.fetchone())["cnt"]
+        break
+
+    template = templates.get_template("partials/task-board.html")
+    return template.render(
+        project=project,
+        running_tasks=running_tasks,
+        completed_tasks=completed_tasks,
+        failed_tasks=failed_tasks,
+        completed_unread=completed_unread,
+        sidebar_unread=sidebar_unread,
+        include_sidebar_oob=True,
+    )
 
 
 @router.get("/{project_id}/tasks", response_model=list[TaskResponse])
@@ -216,7 +291,7 @@ async def list_tasks(
 
 
 @router.post("/{project_id}/tasks", status_code=201, response_model=TaskResponse)
-async def create_task(project_id: str, data: TaskCreate):
+async def create_task(project_id: str, data: TaskCreate, request: Request):
     import httpx
 
     async for db in get_db():
@@ -262,12 +337,21 @@ async def create_task(project_id: str, data: TaskCreate):
 
     if agent:
         a = row_to_dict(agent)
-        agent_id = a["id"]
-        port = a["port"]
-        base_url = f"http://127.0.0.1:{port}"
+        await update_agent_cwd(a["id"], project_id)
 
         try:
             async with httpx.AsyncClient() as client:
+                await client.post(f"http://127.0.0.1:{a['port']}/stop")
+                await asyncio.sleep(1)
+                start_resp = await client.post(f"http://127.0.0.1:{a['port']}/start")
+                if start_resp.status_code not in (200, 201):
+                    pass
+                await asyncio.sleep(4)
+
+                agent_id = a["id"]
+                port = a["port"]
+                base_url = f"http://127.0.0.1:{port}"
+
                 session_json = {"title": title[:50]}
                 if data.model:
                     if "/" in data.model:
@@ -309,7 +393,7 @@ async def create_task(project_id: str, data: TaskCreate):
                         )
                     )
 
-                    return TaskResponse(
+                    response = TaskResponse(
                         id=task_id,
                         project_id=project_id,
                         worktree_id=data.worktree_id,
@@ -327,10 +411,13 @@ async def create_task(project_id: str, data: TaskCreate):
                         updated_at=timestamp,
                         completed_at=None,
                     )
+                    if request.headers.get("HX-Request") == "true":
+                        return HTMLResponse(content=await render_task_board_fragment(project_id))
+                    return response
         except Exception:
             pass
 
-    return TaskResponse(
+    response = TaskResponse(
         id=task_id,
         project_id=project_id,
         worktree_id=data.worktree_id,
@@ -348,6 +435,32 @@ async def create_task(project_id: str, data: TaskCreate):
         updated_at=timestamp,
         completed_at=None,
     )
+    if request.headers.get("HX-Request") == "true":
+        return HTMLResponse(content=await render_task_board_fragment(project_id))
+    return response
+
+
+@router.post("/{project_id}/tasks/create-form")
+async def create_task_form(
+    project_id: str,
+    request: Request,
+    description: str = Form(...),
+    model: str | None = Form(default=None),
+):
+    payload = TaskCreate(description=description, model=model)
+    return await create_task(project_id=project_id, data=payload, request=request)
+
+
+@router.get("/{project_id}/tasks/model-options-fragment")
+async def get_task_model_options_fragment(project_id: str):
+    async for db in get_db():
+        project_row = await db.execute("SELECT id FROM projects WHERE id = ?", (project_id,))
+        if not await project_row.fetchone():
+            raise HTTPException(status_code=404, detail=f"Project '{project_id}' not found")
+        break
+    models = await get_available_models()
+    template = templates.get_template("partials/task-model-picker.html")
+    return HTMLResponse(content=template.render(models=models))
 
 
 @router.get("/{project_id}/tasks/{task_id}")
@@ -363,7 +476,7 @@ async def get_task_detail(project_id: str, task_id: str):
         t = row_to_dict(task)
 
         session_row = await db.execute(
-            "SELECT * FROM sessions WHERE task_id = ? AND status = 'running' ORDER BY started_at DESC LIMIT 1",
+            "SELECT * FROM sessions WHERE task_id = ? ORDER BY started_at DESC LIMIT 1",
             (task_id,),
         )
         session = await session_row.fetchone()
@@ -401,6 +514,93 @@ async def get_task_messages(project_id: str, task_id: str):
     return {"messages": messages}
 
 
+@router.get("/{project_id}/tasks/{task_id}/messages-fragment")
+async def get_task_messages_fragment(project_id: str, task_id: str):
+    payload = await get_task_messages(project_id, task_id)
+    template = templates.get_template("partials/task-messages.html")
+    return HTMLResponse(
+        content=template.render(
+            project_id=project_id,
+            task_id=task_id,
+            messages=payload["messages"],
+        )
+    )
+
+
+@router.post("/{project_id}/tasks/{task_id}/mark-read")
+async def mark_task_read(project_id: str, task_id: str):
+    async for db in get_db():
+        task_row = await db.execute(
+            "SELECT id FROM tasks WHERE id = ? AND project_id = ?", (task_id, project_id)
+        )
+        if not await task_row.fetchone():
+            raise HTTPException(status_code=404, detail=f"Task '{task_id}' not found")
+        await db.execute("UPDATE tasks SET is_new = 0, updated_at = ? WHERE id = ?", (now(), task_id))
+        await db.commit()
+    return {"status": "ok"}
+
+
+@router.get("/{project_id}/tasks/{task_id}/session-status")
+async def get_task_session_status(project_id: str, task_id: str):
+    async for db in get_db():
+        session_row = await db.execute(
+            "SELECT * FROM sessions WHERE task_id = ? AND project_id = ? ORDER BY started_at DESC LIMIT 1",
+            (task_id, project_id),
+        )
+        session = await session_row.fetchone()
+        if not session:
+            return {"status": "none"}
+
+        session_status = session["status"]
+
+        # If session has finished, update task status accordingly
+        if session_status in ("completed", "stopped", "failed"):
+            timestamp = now()
+            task_row = await db.execute("SELECT status FROM tasks WHERE id = ?", (task_id,))
+            task = await task_row.fetchone()
+            if task and task["status"] != "completed":
+                await db.execute(
+                    "UPDATE tasks SET status = ?, completed_at = ?, updated_at = ? WHERE id = ?",
+                    (session_status, timestamp, timestamp, task_id),
+                )
+                await db.commit()
+
+        task_row = await db.execute("SELECT status FROM tasks WHERE id = ?", (task_id,))
+        task_now = await task_row.fetchone()
+        return {"status": task_now["status"] if task_now else "unknown"}
+
+    return {"status": "unknown"}
+
+
+@router.get("/{project_id}/tasks/{task_id}/status-fragment")
+async def get_task_status_fragment(project_id: str, task_id: str):
+    status_payload = await get_task_session_status(project_id, task_id)
+    status = status_payload.get("status", "unknown")
+    template = templates.get_template("partials/task-status.html")
+    return HTMLResponse(content=template.render(status=status))
+
+
+@router.get("/{project_id}/tasks/{task_id}/prompts-fragment")
+async def get_task_prompts_fragment(project_id: str, task_id: str):
+    async for db in get_db():
+        q_rows = await db.execute(
+            """
+            SELECT q.*
+            FROM questions q
+            JOIN sessions s ON s.id = q.session_id
+            WHERE q.task_id = ? AND q.status = 'pending'
+            ORDER BY q.created_at ASC
+            """,
+            (task_id,),
+        )
+        questions = [row_to_dict(r) for r in await q_rows.fetchall()]
+        break
+    template = templates.get_template("partials/task-prompts.html")
+    return HTMLResponse(
+        content=template.render(project_id=project_id, task_id=task_id, questions=questions)
+    )
+
+
 @router.post("/{project_id}/tasks/{task_id}/send-message")
 async def send_task_message_v2(project_id: str, task_id: str, data: dict):
     import httpx
@@ -434,9 +634,17 @@ async def send_task_message_v2(project_id: str, task_id: str, data: dict):
                 return {"status": "error", "message": "No available agents"}
 
             a = row_to_dict(agent)
-            port = a["port"]
+            await update_agent_cwd(a["id"], project_id)
 
             async with httpx.AsyncClient() as client:
+                await client.post(f"http://127.0.0.1:{a['port']}/stop")
+                await asyncio.sleep(1)
+                start_resp = await client.post(f"http://127.0.0.1:{a['port']}/start")
+                if start_resp.status_code not in (200, 201):
+                    return {"status": "error", "message": "Failed to restart agent with new cwd"}
+                await asyncio.sleep(4)
+
+                port = a["port"]
                 session_resp = await client.post(
                     f"http://127.0.0.1:{port}/session", json={"title": t["description"][:50]}
                 )
@@ -492,8 +700,19 @@ async def send_task_message_v2(project_id: str, task_id: str, data: dict):
                 if not fresh_agent:
                     return {"status": "error", "message": "Session dead and no available agents"}
                 fa = row_to_dict(fresh_agent)
+                await update_agent_cwd(fa["id"], project_id)
 
                 async with httpx.AsyncClient() as client:
+                    await client.post(f"http://127.0.0.1:{fa['port']}/stop")
+                    await asyncio.sleep(1)
+                    start_resp = await client.post(f"http://127.0.0.1:{fa['port']}/start")
+                    if start_resp.status_code not in (200, 201):
+                        return {
+                            "status": "error",
+                            "message": "Failed to restart agent with new cwd",
+                        }
+                    await asyncio.sleep(4)
+
                     resp = await client.post(
                         f"http://127.0.0.1:{fa['port']}/session",
                         json={"title": t["description"][:50]},
@@ -539,6 +758,17 @@ async def send_task_message_v2(project_id: str, task_id: str, data: dict):
     return {"status": "ok"}
 
 
+@router.post("/{project_id}/tasks/{task_id}/send-message-form")
+async def send_task_message_form(project_id: str, task_id: str, message: str = Form(...)):
+    result = await send_task_message_v2(project_id, task_id, {"message": message})
+    if result.get("status") != "ok":
+        raise HTTPException(status_code=400, detail=result.get("message", "Failed to send message"))
+    from opencode_orchestrator.session_sync import sync_opencode_session_tasks_once
+
+    await sync_opencode_session_tasks_once()
+    return await get_task_messages_fragment(project_id, task_id)
+
+
 @router.post("/{project_id}/tasks/{task_id}/run")
 async def run_task(project_id: str, task_id: str):
     import httpx
@@ -569,6 +799,7 @@ async def run_task(project_id: str, task_id: str):
             }
 
         a = row_to_dict(agent)
+        await update_agent_cwd(a["id"], project_id)
 
     agent_id = a["id"]
     port = a["port"]
@@ -577,6 +808,13 @@ async def run_task(project_id: str, task_id: str):
 
     try:
         async with httpx.AsyncClient() as client:
+            await client.post(f"http://127.0.0.1:{port}/stop")
+            await asyncio.sleep(1)
+            start_resp = await client.post(f"http://127.0.0.1:{port}/start")
+            if start_resp.status_code not in (200, 201):
+                return {"status": "error", "message": "Failed to restart agent with new cwd"}
+            await asyncio.sleep(4)
+
             session_resp = await client.post(
                 f"{base_url}/session", json={"title": t["description"][:50]}
             )
@@ -628,8 +866,8 @@ async def run_task(project_id: str, task_id: str):
         return {"status": "error", "message": str(e)}
 
 
-@router.post("/{project_id}/tasks/{task_id}/archive")
-async def archive_task(project_id: str, task_id: str):
+@router.delete("/{project_id}/tasks/{task_id}/archive")
+async def archive_task(project_id: str, task_id: str, request: Request):
     async for db in get_db():
         task_row = await db.execute(
             "SELECT * FROM tasks WHERE id = ? AND project_id = ?", (task_id, project_id)
@@ -640,16 +878,18 @@ async def archive_task(project_id: str, task_id: str):
 
         timestamp = now()
         await db.execute(
-            "UPDATE tasks SET archived = 1, updated_at = ? WHERE id = ?",
+            "UPDATE tasks SET archived = 1, is_new = 0, updated_at = ? WHERE id = ?",
             (timestamp, task_id),
         )
         await db.commit()
 
+    if request.headers.get("HX-Request") == "true":
+        return HTMLResponse(content=await render_task_board_fragment(project_id))
     return {"status": "ok"}
 
 
 @router.post("/{project_id}/tasks/{task_id}/unarchive")
-async def unarchive_task(project_id: str, task_id: str):
+async def unarchive_task(project_id: str, task_id: str, request: Request):
     async for db in get_db():
         task_row = await db.execute(
             "SELECT * FROM tasks WHERE id = ? AND project_id = ?", (task_id, project_id)
@@ -665,7 +905,14 @@ async def unarchive_task(project_id: str, task_id: str):
         )
         await db.commit()
 
+    if request.headers.get("HX-Request") == "true":
+        return HTMLResponse(content=await render_task_board_fragment(project_id))
     return {"status": "ok"}
+
+
+@router.post("/{project_id}/tasks/{task_id}/archive")
+async def archive_task_post(project_id: str, task_id: str, request: Request):
+    return await archive_task(project_id, task_id, request)
 
 
 @router.delete("/{project_id}/tasks/{task_id}", status_code=204)
@@ -709,8 +956,7 @@ class QuestionRespond(BaseModel):
     response: str
 
 
-@router.post("/sessions/{session_id}/questions/{question_id}/respond")
-async def respond_to_question(session_id: str, question_id: str, data: QuestionRespond):
+async def _respond_to_question(session_id: str, question_id: str, response_text: str):
     import httpx
 
     async for db in get_db():
@@ -752,15 +998,41 @@ async def respond_to_question(session_id: str, question_id: str, data: QuestionR
             "UPDATE questions SET status = 'answered', answered_at = ? WHERE id = ?",
             (timestamp, question_id),
         )
+        await transition_task_status(task_id, "running", "user answered pending question")
         await db.commit()
 
     async with httpx.AsyncClient() as client:
         resp = await client.post(
             f"http://127.0.0.1:{port}/session/{session_id}/message",
-            json={"parts": [{"type": "text", "text": data.response}]},
+            json={"parts": [{"type": "text", "text": response_text}]},
             timeout=httpx.Timeout(30.0),
         )
         if resp.status_code != 200:
             raise HTTPException(status_code=502, detail="Failed to send response to agent")
 
-    return {"status": "ok", "message": "Response sent to agent"}
+    asyncio.create_task(
+        send_task_to_agent_background(
+            project_id=t["project_id"],
+            task_id=task_id,
+            agent_session_id=session_id,
+            description=response_text,
+            port=port,
+        )
+    )
+
+    return {"status": "ok", "message": "Response sent to agent", "task_id": task_id, "project_id": t["project_id"]}
+
+
+@router.post("/sessions/{session_id}/questions/{question_id}/respond")
+async def respond_to_question(session_id: str, question_id: str, data: QuestionRespond):
+    return await _respond_to_question(session_id, question_id, data.response)
+
+
+@router.post("/sessions/{session_id}/questions/{question_id}/respond-form")
+async def respond_to_question_form(
+    session_id: str,
+    question_id: str,
+    response: str = Form(...),
+):
+    payload = await _respond_to_question(session_id, question_id, response)
+    return await get_task_prompts_fragment(payload["project_id"], payload["task_id"])

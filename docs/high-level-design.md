@@ -35,7 +35,7 @@ We need a **local-first, project-based orchestrator** that treats AI agent sessi
 ```
 ┌──────────────────────────────────────────────────────────────┐
 │                    Desktop / Mobile UI                        │
-│           HTMX + Alpine.js + CSS (responsive)                │
+│           HTMX-first + server-rendered snippets              │
 │   ┌──────────┐  ┌──────────┐  ┌────────────┐  ┌─────────┐  │
 │   │ Project  │  │  Task    │  │  Session   │  │  Agent  │  │
 │   │  View    │  │  Board   │  │  Monitor   │  │  Output │  │
@@ -114,9 +114,12 @@ We need a **local-first, project-based orchestrator** that treats AI agent sessi
 - Agent is started with `opencode serve --port <port>` 
 - Orchestrator creates sessions via `POST /session`
 - Messages sent via `POST /session/{id}/message`
+- Available providers/models discovered via `GET /config/providers`
 - Agent runs persistently until stopped
 
 **Rationale**: `opencode serve` provides a full HTTP API with session management, message history, and streaming support. It's more robust for orchestrator use than short-lived stdio connections that exit after each request.
+
+The same API is the source of truth for model selection. The UI should not hardcode model IDs; instead it should render model choices from live OpenCode provider metadata.
 
 ### Decision 4: Local Access Only (v1)
 
@@ -124,11 +127,11 @@ We need a **local-first, project-based orchestrator** that treats AI agent sessi
 
 **Rationale**: Keep v1 simple and focused on core orchestration. Remote access adds complexity (TLS, authentication, network resilience) that can be added later.
 
-### Decision 5: HTMX + Alpine.js + CSS for Frontend
+### Decision 5: HTMX-First Snippet Architecture
 
 
 
-**Rationale**: HTMX keeps the frontend simple — FastAPI renders HTML fragments, HTMX swaps them in. No build step, no node_modules, no framework churn. Alpine.js fills the gap for client-side interactivity without a full framework.
+**Rationale**: UI interactions are HTMX-mediated by default: endpoints return HTML snippets, and OOB swaps update sidebar badges and status chips. This keeps behavior deterministic and server-owned without SPA complexity.
 
 **Alternatives considered**:
 - React/Vue SPA: Adds build complexity, second language ecosystem, overkill for this UI
@@ -140,6 +143,16 @@ We need a **local-first, project-based orchestrator** that treats AI agent sessi
 **Choice**: Use pixi for managing Python dependencies and development environment.
 
 **Rationale**: User preference. Pixi handles conda + pip packages, lockfiles, and cross-platform reproducibility. Single `pixi.toml` for the project.
+
+### Decision 7: Single-Writer Assistant Message Ingestion
+
+**Choice**: Assistant responses are persisted only from OpenCode sqlite history ingestion (`opencode_sqlite` source). The orchestrator HTTP send path does not persist assistant text payloads directly.
+
+**Rationale**: A single writer for assistant messages prevents duplicate chat entries caused by concurrent ingestion paths (stream payload parsing plus sqlite sync). OpenCode sqlite history is the durable timeline and provides stable `opencode_message_id` values for idempotent inserts.
+
+**Alternatives considered**:
+- Dual-write (stream + sqlite): Causes duplicate assistant messages and ambiguous ownership.
+- Stream-only: Loses durable replay/cursor semantics from OpenCode history tables.
 
 ## Data Model Overview
 
@@ -159,7 +172,9 @@ Project
 │   │   ├── retry_count, max_retries
 │   │   ├── created_at, updated_at, completed_at
 │   │   └── TaskMessage (conversation thread)
-│   │       ├── id, task_id, role (user|agent), content, timestamp
+│   │       ├── id, task_id, role (user|assistant), content, timestamp
+│   │       ├── source (orchestrator|opencode_sqlite)
+│   │       ├── opencode_message_id (dedupe cursor)
 │   │       └── metadata (optional)
 │   │   └── TaskLog (audit trail)
 │   │       ├── id, task_id, event, from_status, to_status
@@ -167,7 +182,7 @@ Project
 │   │
 │   └── Session — may have multiple per task
 │       ├── id, worktree_id, agent_id, task_id
-│       ├── status (spawned|running|stopping|completed|failed)
+│       ├── status (spawned|running|waiting_question|waiting_permission|stopping|completed|failed)
 │       ├── pid, started_at, ended_at
 │       ├── output_log_path, exit_code, error_message
 │
@@ -188,6 +203,7 @@ Project
 | Agent processes crash or hang | Add heartbeat monitoring with configurable timeout; auto-fail stuck sessions (future) |
 | Git worktree limits on large repos | Monitor worktree count; warn at threshold |
 | SQLite write contention under heavy load | WAL mode + single-writer pattern; sufficient for single-user |
+| Duplicate assistant chat entries from mixed ingestion paths | Enforce single-writer assistant persistence from OpenCode sqlite sync |
 
 ## Implementation Status (v0.1.0)
 
@@ -198,7 +214,8 @@ Project
 | Agent Gateway | ✅ Implemented | Registration, start/stop, HTTP communication |
 | Session Manager | ✅ Implemented | Basic session management, cancel |
 | Worktrees | ✅ Implemented | Git worktree creation/removal |
-| Frontend | ✅ Implemented | Basic HTMX pages |
+| Frontend | ✅ Implemented | HTMX-first pages with fragment endpoints |
+| OpenCode History Sync | ✅ Implemented | Imports message timeline from OpenCode SQLite (`opencode.db`) |
 | Scheduler | ⏳ Not implemented | Planned for future |
 | SSE Output Streaming | ⏳ Not implemented | Planned for future |
 | WebSocket Chat | ⏳ Not implemented | Planned for future |

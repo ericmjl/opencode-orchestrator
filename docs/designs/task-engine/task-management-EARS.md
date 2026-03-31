@@ -28,8 +28,9 @@
 
 - [x] **TASK-MSG-001**: The system shall allow sending messages to a running task.
 - [x] **TASK-MSG-002**: The system shall store user messages in the task message history.
-- [x] **TASK-MSG-003**: The system shall store agent responses in the task message history.
+- [x] **TASK-MSG-003**: The system shall store assistant responses in the task message history from OpenCode sqlite sync.
 - [x] **TASK-MSG-004**: The system shall forward messages to the agent via HTTP.
+- [x] **TASK-MSG-005**: The system shall not persist assistant responses directly from orchestrator stream parsing.
 
 ## Task Deletion
 

@@ -5,7 +5,7 @@
 
 ## Overview
 
-The Task Engine is the core workflow engine of the orchestrator. Every unit of work is a **task ticket** — an atomic, trackable unit that can be assigned to an agent, scheduled for recurring execution, and monitored through its full lifecycle. The Task Engine manages task creation, assignment, state transitions, conversation threads, and scheduling.
+The Task Engine is the core workflow engine of the orchestrator. Every unit of work is a **task ticket** — an atomic, trackable unit that can be assigned to an agent and monitored through its full lifecycle. The Task Engine manages task creation, assignment, guarded state transitions, conversation threads, and OpenCode synchronization.
 
 ## Context
 
@@ -45,6 +45,8 @@ States:
 
 - `created` — Task exists, not yet assigned to an agent
 - `running` — Agent session is active
+- `waiting_question` — Agent asked a question and is awaiting user response
+- `waiting_permission` — Agent requested permission approval
 - `completed` — Agent finished successfully
 - `failed` — Agent failed; may be retried
 - `cancelled` — User cancelled the task
@@ -111,7 +113,7 @@ The task detail page shows:
 | worktree_id | String (UUID, nullable) | Foreign key to Worktree (git projects only) |
 | title | String | Auto-generated from description (first 50 chars) |
 | description | String | Full task prompt / instructions for the agent |
-| status | Enum | `created`, `running`, `completed`, `failed`, `cancelled` |
+| status | Enum | `created`, `running`, `waiting_question`, `waiting_permission`, `completed`, `failed`, `cancelled` |
 | assigned_agent_id | String (UUID, nullable) | Foreign key to AgentRegistry |
 | priority | Integer | Deprecated (kept for compatibility, always 0) |
 | schedule_cron | String (nullable) | Cron expression for recurring tasks, null for one-shot |
@@ -131,8 +133,19 @@ The task detail page shows:
 | task_id | String (UUID) | Foreign key to Task |
 | role | Enum | `user`, `agent`, `system` |
 | content | String | Message body |
+| source | Enum | `orchestrator`, `opencode_sqlite` |
+| opencode_message_id | String (nullable) | Message id from OpenCode sqlite for deduplication |
 | metadata | JSON (nullable) | Token usage, tool calls, duration, etc. |
 | timestamp | Timestamp | Message time |
+
+### Message Ingestion Ownership
+
+The Task Engine uses explicit write ownership to prevent duplicate messages:
+
+1. **User messages** are persisted by the orchestrator send path (`source=orchestrator`).
+2. **Assistant messages** are persisted only by OpenCode sqlite sync (`source=opencode_sqlite`).
+3. The HTTP stream parsing path may inspect assistant payloads for waiting states (questions/permissions), but it shall not insert assistant `TaskMessage` rows.
+4. Deduplication for imported assistant history is keyed by `(task_id, opencode_message_id)` so repeated sync passes remain idempotent.
 
 ### TaskLog
 
@@ -165,6 +178,11 @@ The task detail page shows:
 | `/api/projects/{id}/tasks/{taskId}` | GET | — | `TaskDetailResponse` (includes session and agent info) |
 | `/api/projects/{id}/tasks/{taskId}/run` | POST | — | Starts task with available agent |
 | `/api/projects/{id}/tasks/{taskId}/send-message` | POST | `{"message": "..."}` | Sends message to agent session |
+| `/api/projects/{id}/tasks/{taskId}/mark-read` | POST | — | Clears unread badge for task |
+| `/api/projects/{id}/tasks/{taskId}/messages-fragment` | GET | — | HTMX HTML snippet for message thread |
+| `/api/projects/{id}/tasks/{taskId}/status-fragment` | GET | — | HTMX HTML snippet for status badge |
+| `/api/projects/{id}/tasks/{taskId}/prompts-fragment` | GET | — | HTMX HTML snippet for pending prompts |
+| `/api/projects/{id}/tasks/model-options-fragment` | GET | — | HTMX HTML snippet for task model picker |
 
 **Note**: Task cancellation is handled by cancelling the associated session via `/api/projects/{id}/sessions/{sessionId}/cancel`.
 
@@ -190,11 +208,13 @@ The task detail page shows:
 ```json
 {
   "description": "The login form returns 500 when email contains a plus sign...",
-  "worktree_id": "optional-uuid"
+  "worktree_id": "optional-uuid",
+  "model": "openai/gpt-5.4"
 }
 ```
 
 **Note**: The `title` field is auto-generated from the description (first 50 characters + "..." if longer). The `priority` field is no longer used in v1 — tasks are ordered by creation time.
+The `model` field is optional. When set as `provider/model`, the Task Engine maps it to OpenCode session fields (`providerID`, `modelID`) when creating a session.
 
 **POST /api/projects/{id}/tasks/{taskId}/assign** — `AssignRequest`:
 
@@ -283,9 +303,13 @@ Keeping `schedule_cron` and `schedule_id` on the Task record means the task is s
 
 `TaskMessage` is the conversation thread (user-agent-system messages) — it's the content the user and agent produce. `TaskLog` is the audit trail (state transitions, system events) — it's what happened to the task mechanically. Different consumers, different query patterns.
 
+### Why sqlite-sync-only assistant persistence?
+
+Assistant text can arrive through multiple observation paths (HTTP response body and sqlite timeline). If both write to `TaskMessage`, the user sees duplicate assistant entries. Restricting assistant persistence to sqlite sync hardens an arrow-of-intent invariant: OpenCode history is the single source of truth for assistant timeline hydration.
+
 ## Implementation Status
 
-✅ Implemented (v0.1.0). Full CRUD, auto-assign on creation, send-message endpoint. Scheduling fields stored but not functional yet.
+✅ Implemented (v0.2 rewrite slice). Full CRUD, guarded state transitions, HTMX fragment endpoints, and SQLite history-aware message timeline ingestion.
 
 ## Requirements
 

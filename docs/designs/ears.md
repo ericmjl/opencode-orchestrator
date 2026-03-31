@@ -25,6 +25,7 @@
 - [x] **AGENT-008**: The system shall list all registered agents.
 - [x] **AGENT-009**: The system shall allow users to delete an agent registration.
 - [x] **AGENT-010**: The system shall prevent duplicate agent name registration.
+- [x] **AGENT-011**: The system shall discover available providers/models from OpenCode `GET /config/providers`.
 
 ## Worktree Management
 
@@ -51,6 +52,12 @@
 - [x] **TASK-011**: The system shall filter tasks by status.
 - [x] **TASK-012**: The system shall allow users to delete a task.
 - [x] **TASK-013**: The system shall return task details including associated session and agent.
+- [x] **TASK-018**: The system shall represent waiting states as `waiting_question` and `waiting_permission`.
+- [x] **TASK-019**: The system shall expose HTMX task snippets for board, status, messages, and prompts.
+- [x] **TASK-020**: The system shall ingest OpenCode sqlite message history and deduplicate by OpenCode message id.
+- [x] **TASK-021**: The system shall accept an optional `model` on task creation and map `provider/model` to OpenCode session `providerID`/`modelID`.
+- [x] **TASK-022**: The system shall persist assistant task messages from OpenCode sqlite sync only.
+- [x] **TASK-023**: The system shall not persist assistant task messages from orchestrator stream parsing.
 - [ ] **TASK-014**: The system shall allow users to cancel a running task.
 - [ ] **TASK-015**: The system shall allow users to retry a failed task.
 - [ ] **TASK-016**: The system shall support scheduling tasks via cron expression.
@@ -65,6 +72,9 @@
 - [x] **SESS-005**: The system shall send SIGTERM to agent process on cancel.
 - [x] **SESS-006**: The system shall update session status to "stopping" on cancel.
 - [x] **SESS-007**: The system shall return session details.
+- [x] **SESS-011**: The system shall reconcile session/task runtime status from OpenCode `/session/status`, `/permission`, and `/question`.
+- [x] **SESS-012**: The system shall import OpenCode session timeline from sqlite (`opencode.db`) for chat history hydration.
+- [x] **SESS-013**: The system shall treat sqlite timeline import as the durable source of truth for assistant message hydration.
 - [ ] **SESS-008**: The system shall stream session output via SSE.
 - [ ] **SESS-009**: The system shall support pause/resume for sessions.
 - [ ] **SESS-010**: The system shall perform heartbeat monitoring for running sessions.
@@ -77,7 +87,8 @@
 - [x] **UI-004**: The system shall render settings page with agent registry.
 - [x] **UI-005**: The system shall render session list page.
 - [x] **UI-006**: The system shall load HTMX from CDN.
-- [x] **UI-007**: The system shall load Alpine.js from CDN.
+- [x] **UI-007**: The system shall mediate create/update/delete interactions through HTMX endpoints and snippet responses.
+- [x] **UI-011**: The system shall render task model options from OpenCode provider metadata rather than hardcoded UI lists.
 - [ ] **UI-008**: The system shall support real-time output streaming via SSE.
 - [ ] **UI-009**: The system shall support real-time chat via WebSocket.
 - [ ] **UI-010**: The system shall support mobile access via Tailscale.
