@@ -47,7 +47,7 @@
 - [x] **TASK-006**: The system shall allow users to run a created task manually.
 - [x] **TASK-007**: The system shall allow users to send additional messages to a running task.
 - [x] **TASK-008**: The system shall store user messages in task_messages table.
-- [x] **TASK-009**: The system shall store agent responses in task_messages table.
+- [x] **TASK-009**: The system shall store assistant responses in task_messages table via OpenCode sqlite sync.
 - [x] **TASK-010**: The system shall list all tasks for a project.
 - [x] **TASK-011**: The system shall filter tasks by status.
 - [x] **TASK-012**: The system shall allow users to delete a task.
@@ -58,6 +58,9 @@
 - [x] **TASK-021**: The system shall accept an optional `model` on task creation and map `provider/model` to OpenCode session `providerID`/`modelID`.
 - [x] **TASK-022**: The system shall persist assistant task messages from OpenCode sqlite sync only.
 - [x] **TASK-023**: The system shall not persist assistant task messages from orchestrator stream parsing.
+- [x] **TASK-024**: The system shall resolve task execution to project-pinned agents whose configured and live runtime directories match the task project path.
+- [x] **TASK-025**: Where no matching agent exists for task execution, the system shall bootstrap a project-pinned agent and use it for create/run/send flows.
+- [x] **TASK-026**: Where project-pinned bootstrap or live directory validation fails, the system shall fail closed with an explicit error rather than continuing in a mismatched directory.
 - [ ] **TASK-014**: The system shall allow users to cancel a running task.
 - [ ] **TASK-015**: The system shall allow users to retry a failed task.
 - [ ] **TASK-016**: The system shall support scheduling tasks via cron expression.
@@ -89,6 +92,14 @@
 - [x] **UI-006**: The system shall load HTMX from CDN.
 - [x] **UI-007**: The system shall mediate create/update/delete interactions through HTMX endpoints and snippet responses.
 - [x] **UI-011**: The system shall render task model options from OpenCode provider metadata rather than hardcoded UI lists.
+- [x] **UI-012**: The system shall persist the last selected task model across page reloads and HTMX model-picker swaps.
+- [x] **UI-013**: The system shall render an immediate optimistic pending task card when task creation is submitted, and replace it with server-rendered board state on response.
+- [x] **UI-014**: The system shall ensure all UI controls and layouts conform to `docs/design-language.md`.
+- [x] **UI-015**: The system shall keep task-detail send controls in a pending `Sending...` state until submitted user text is confirmed in server-rendered message history.
+- [x] **UI-016**: The system shall avoid optimistic insertion of user chat history entries in reactive task-detail threads.
+- [x] **UI-017**: The system shall re-render the full task-board region after archive mutations so column empty states remain correct.
+- [x] **UI-018**: The system shall refresh project task-board and task-detail regions via SSE-triggered HTMX updates rather than continuous browser polling.
+- [x] **UI-019**: The system shall preserve reliable navigation interactions while live SSE/HTMX updates are active.
 - [ ] **UI-008**: The system shall support real-time output streaming via SSE.
 - [ ] **UI-009**: The system shall support real-time chat via WebSocket.
 - [ ] **UI-010**: The system shall support mobile access via Tailscale.

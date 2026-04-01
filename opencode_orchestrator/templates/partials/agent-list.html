@@ -1,0 +1,35 @@
+<div class="agent-list" id="agent-list">
+    {% for agent in agents %}
+    <div class="agent-card" id="agent-card-{{ agent.id }}">
+        <div class="agent-header">
+            <h3>{{ agent.name }}</h3>
+            <span class="badge badge-{{ agent.status }}">{{ agent.status }}</span>
+        </div>
+        <p class="agent-command">{{ agent.command }}</p>
+        <div class="agent-actions">
+            {% if agent.status == 'available' %}
+            <form hx-post="/api/agents/{{ agent.id }}/stop-form" hx-target="#agent-list" hx-swap="outerHTML">
+                <button type="submit" class="btn btn-sm">Stop</button>
+            </form>
+            {% else %}
+            <form hx-post="/api/agents/{{ agent.id }}/start-form" hx-target="#agent-list" hx-swap="outerHTML">
+                <button type="submit" class="btn btn-sm">Start</button>
+            </form>
+            {% endif %}
+            <form hx-post="/api/agents/{{ agent.id }}/ping-form" hx-target="#agent-list" hx-swap="outerHTML">
+                <button type="submit" class="btn btn-sm">Test</button>
+            </form>
+            <form
+                hx-delete="/api/agents/{{ agent.id }}"
+                hx-target="#agent-card-{{ agent.id }}"
+                hx-swap="delete"
+                hx-confirm="Delete this agent?"
+            >
+                <button type="submit" class="btn btn-sm btn-danger">Delete</button>
+            </form>
+        </div>
+    </div>
+    {% else %}
+    <p class="empty-state">No agents configured. Add one to get started.</p>
+    {% endfor %}
+</div>

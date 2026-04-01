@@ -5,7 +5,7 @@
 
 ## Overview
 
-The Session Manager owns the lifecycle of agent sessions — from launch to termination. It manages git worktrees (for git projects), spawns agent processes via the ACP Gateway, captures output in real-time, and monitors session health via heartbeats.
+The Session Manager owns the lifecycle of agent sessions — from launch to termination. It manages git worktrees (for git projects), spawns agent processes via the ACP Gateway, and synchronizes session/task state using OpenCode HTTP signals plus OpenCode SQLite message history.
 
 ## Context
 
@@ -138,7 +138,7 @@ Worktrees are only created for git projects. For non-git projects, sessions run 
 | worktree_id | String (UUID, nullable) | Foreign key to Worktree |
 | task_id | String (UUID) | Foreign key to Task |
 | agent_id | String (UUID) | Foreign key to AgentRegistry |
-| status | Enum | `spawned`, `running`, `stopping`, `completed`, `failed` |
+| status | Enum | `spawned`, `running`, `waiting_question`, `waiting_permission`, `stopping`, `completed`, `failed` |
 | pid | Integer (nullable) | OS process ID |
 | started_at | Timestamp | When the agent process was launched |
 | ended_at | Timestamp (nullable) | When the session terminated |
@@ -176,11 +176,15 @@ Worktrees are only created for git projects. For non-git projects, sessions run 
 
 `base_ref` is optional, defaults to the project's default branch.
 
-### Session Output (Not Implemented in v1)
+### Session Output and Synchronization
 
-SSE streaming for real-time output is not implemented. Future versions will support:
-- `GET /api/projects/{id}/sessions/{sid}/output` — SSE stream for real-time output
-- Agent output can be viewed in task detail page via TaskMessages
+Session state is reconciled from OpenCode runtime APIs:
+- `GET /session/status` for busy/idle
+- `GET /permission` and `GET /question` for pending approvals/prompts
+- `GET /session/{sid}` for completion summary
+- `GET /path` to locate OpenCode sqlite for timeline hydration
+
+Task detail UI reads server-rendered HTMX snippets for status/messages/prompts.
 
 ## Session Launch Flow
 
@@ -214,12 +218,13 @@ When the Task Engine transitions a task to `running`, it calls the Session Manag
 3. **Cleanup**: Update Session record, set `ended_at` and `exit_code`, transition task status.
 4. **Worktree**: Worktree is NOT automatically removed. User can merge or delete manually.
 
-## Heartbeat and Health Monitoring (Not Implemented in v1)
+## Runtime Health
 
-Background heartbeat monitoring is not implemented. Future versions will include:
-- Periodic check (configurable interval, default 30s) that the agent process is alive
-- If process is dead, transitions session to `failed`, notifies Task Engine
-- If no heartbeat received within `heartbeat_timeout` (default: 120s), marks session as unresponsive in the UI
+Background reconciliation loop runs periodically and applies deterministic transitions:
+- Busy -> `running`
+- Pending permission -> `waiting_permission`
+- Pending question -> `waiting_question`
+- Idle + summary -> `completed`
 
 ## Error Handling
 
@@ -261,7 +266,7 @@ The user may want to review the changes, merge them, or run another task in the 
 
 ## Implementation Status
 
-✅ Implemented (v0.1.0). List, get, cancel endpoints working. SSE streaming, heartbeat monitoring, and pause/resume not implemented yet.
+✅ Implemented (v0.2 rewrite slice). List/get/cancel endpoints plus reconciliation loop and OpenCode sqlite message import.
 
 ## Requirements
 

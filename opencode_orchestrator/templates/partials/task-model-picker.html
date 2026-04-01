@@ -1,0 +1,23 @@
+<select
+    id="task-model"
+    name="model"
+    class="task-model-select"
+    style="
+        width: 100%;
+        min-width: 220px;
+        height: 34px;
+        min-height: 34px;
+        padding: 0 0.5rem;
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        background: var(--bg);
+        color: var(--text);
+        font-size: 0.9rem;
+        font-family: inherit;
+    "
+>
+    <option value="">Agent default model</option>
+    {% for model in models %}
+    <option value="{{ model.id }}">{{ model.name }} · {{ model.provider }}</option>
+    {% endfor %}
+</select>

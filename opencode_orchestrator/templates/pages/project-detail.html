@@ -1,183 +1,203 @@
 {% extends "base.html" %}
 
+{% block header_title %}{{ project.name }}{% endblock %}
+
 {% block content %}
 <div class="page-header">
     <h1>{{ project.name }}</h1>
     <div class="project-nav">
         <a href="/projects/{{ project.id }}/sessions" class="btn btn-sm">Sessions</a>
-        <button class="btn btn-sm btn-danger" onclick="
-            if (confirm('Remove {{ project.name | e }} from view? The project files will NOT be deleted.')) {
-                fetch('/api/projects/{{ project.id }}', { method: 'DELETE' })
-                    .then(r => { if (r.ok || r.status === 204) window.location.href = '/projects'; else alert('Failed to remove project'); });
-            }
-        ">Remove from View</button>
+        <form
+            hx-delete="/api/projects/{{ project.id }}"
+            hx-confirm="Remove {{ project.name | e }} from view? The project files will NOT be deleted."
+            hx-swap="none"
+            hx-on::after-request="if(event.detail.successful){ window.location='/projects'; }"
+        >
+            <button class="btn btn-sm btn-danger" type="submit">Remove from View</button>
+        </form>
     </div>
 </div>
 
-<div x-data="{ activeTab: 'tasks' }" x-init="
-    setInterval(() => {
-        fetch('/api/projects/{{ project.id }}/tasks')
-            .then(r => r.json())
-            .then(tasks => {
-                const runningNow = tasks.filter(t => t.status === 'running').map(t => t.id);
-                const wasRunning = document.querySelectorAll('.task-card-link .task-meta').length;
-                if (runningNow.length < wasRunning) {
-                    window.location.reload();
-                }
-            });
-    }, 5000);
-">
-    <div class="tabs">
-        <button :class="{ active: activeTab === 'tasks' }" @click="activeTab = 'tasks'">Tasks</button>
-        <button :class="{ active: activeTab === 'sessions' }" @click="activeTab = 'sessions'">Sessions</button>
+<div>
+    <div class="tabs" style="margin-bottom: 1rem;">
+        <a href="/projects/{{ project.id }}" class="btn btn-sm">Tasks</a>
+        <a href="/projects/{{ project.id }}/sessions" class="btn btn-sm">Sessions</a>
     </div>
 
-    <div x-show="activeTab === 'tasks'">
-        <div class="task-board">
-            <div class="task-column">
-                <h3>Running</h3>
-                {% for task in tasks if task.status == 'running' %}
-                <a href="/projects/{{ project.id }}/tasks/{{ task.id }}" class="task-card task-card-link">
-                    <div class="task-title">{{ task.title }}</div>
-                    <div class="task-meta">Running...</div>
-                </a>
-                {% else %}
-                <p class="empty-column">No tasks</p>
-                {% endfor %}
-            </div>
-
-            <div class="task-column">
-                <h3>Completed</h3>
-                {% for task in tasks if task.status == 'completed' %}
-                <div class="task-card task-card-completed">
-                    <a href="/projects/{{ project.id }}/tasks/{{ task.id }}" class="task-card-link" style="text-decoration: none; color: inherit;">
-                        <div class="task-title">{{ task.title }}</div>
-                    </a>
-                    <button class="btn btn-sm btn-archive" onclick="
-                        event.preventDefault();
-                        event.stopPropagation();
-                        var card = this.closest('.task-card');
-                        fetch('/api/projects/{{ project.id }}/tasks/{{ task.id }}/archive', { method: 'POST' })
-                            .then(r => { if(r.ok) window.location.reload(); else alert('Failed to archive'); });
-                    ">Archive</button>
-                </div>
-                {% else %}
-                <p class="empty-column">No tasks</p>
-                {% endfor %}
-            </div>
-
-            <div class="task-column">
-                <h3>Failed</h3>
-                {% for task in tasks if task.status == 'failed' %}
-                <a href="/projects/{{ project.id }}/tasks/{{ task.id }}" class="task-card task-card-failed task-card-link">
-                    <div class="task-title">{{ task.title }}</div>
-                    <div class="task-meta">Retry {{ task.retry_count }}/{{ task.max_retries }}</div>
-                </a>
-                {% else %}
-                <p class="empty-column">No tasks</p>
-                {% endfor %}
-            </div>
+    <div hx-ext="sse" sse-connect="/api/projects/{{ project.id }}/tasks/board-stream">
+        <div
+            class="task-board"
+            id="task-board"
+            style="grid-template-columns: repeat(3, 1fr);"
+            hx-get="/api/projects/{{ project.id }}/tasks/board"
+            hx-trigger="load, sse:project-updated"
+            hx-swap="innerHTML"
+        >
+            {% set include_sidebar_oob = false %}
+            {% include "partials/task-board.html" %}
         </div>
-
-        <div class="section-header" style="margin-top: 1rem;">
-            <h3 x-show="true" style="cursor: pointer;" @click="showArchived = !showArchived">
-                Archived (<span x-text="archivedTasks.length">0</span>)
-                <span x-text="showArchived ? '▾' : '▸'"></span>
-            </h3>
-        </div>
-        <div x-show="showArchived" x-init="
-            fetch('/api/projects/{{ project.id }}/tasks?include_archived=true')
-                .then(r => r.json())
-                .then(tasks => { archivedTasks = tasks.filter(t => t.archived); });
-        " x-data="{ showArchived: false, archivedTasks: [] }">
-            <div class="task-board" style="display: block;">
-                {% raw %}{{ archivedTasks.length === 0 }}{% endraw %}
-                <template x-if="archivedTasks.length === 0">
-                    <p class="empty-state">No archived tasks</p>
-                </template>
-                <template x-for="task in archivedTasks" :key="task.id">
-                    <div class="task-card task-card-archived" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
-                        <a :href="'/projects/{{ project.id }}/tasks/' + task.id" style="flex: 1; text-decoration: none; color: inherit;">
-                            <div class="task-title" x-text="task.title"></div>
-                        </a>
-                        <button class="btn btn-sm" @click="
-                            fetch('/api/projects/{{ project.id }}/tasks/' + task.id + '/unarchive', {method: 'POST'})
-                                .then(r => { if(r.ok) window.location.reload(); });
-                        ">Unarchive</button>
-                    </div>
-                </template>
-            </div>
-        </div>
+        {# Temporarily disabled per user request while debugging first paint behavior.
+        <div
+            id="task-board-poller"
+            hx-get="/api/projects/{{ project.id }}/tasks/board"
+            hx-trigger="load, every 3s"
+            hx-target="#task-board"
+            hx-swap="innerHTML"
+            aria-hidden="true"
+            style="position:absolute; width:1px; height:1px; overflow:hidden; clip-path: inset(50%); white-space: nowrap;"
+        ></div>
+        #}
 
         <div class="section-header">
             <h3>Create Task</h3>
         </div>
-        <form id="create-task-form" class="create-form" onsubmit="return false;" x-data="{ models: [], loading: true }" x-init="fetch('/api/agents/models').then(r => r.json()).then(d => { models = d.models || []; loading = false; setTimeout(() => { const saved = localStorage.getItem('lastSelectedModel'); if (saved) document.getElementById('task-model').value = saved; }, 0); })">
+        <form
+            id="create-task-form"
+            class="create-form"
+            hx-post="/api/projects/{{ project.id }}/tasks/create-form"
+            hx-target="#task-board"
+            hx-swap="innerHTML"
+        >
             <div class="form-row">
-                <select id="task-model" style="width: 220px; margin-right: 0.5rem;" :disabled="loading">
-                    <option value="">Default model</option>
-                    <template x-for="model in models" :key="model.id">
-                        <option :value="model.id" x-text="model.name"></option>
-                    </template>
-                </select>
-                <input type="text" id="task-description" name="description" placeholder="What needs to be done? Press Enter to create" required style="flex: 1;" onkeydown="if(event.key==='Enter'){createTask();event.preventDefault();}">
-                <button type="button" class="btn btn-primary" onclick="createTask()">Create</button>
+                <input type="text" id="task-description" name="description" placeholder="What needs to be done? Press Enter to create" required style="flex: 1;">
+                <div
+                    id="task-model-picker"
+                    hx-get="/api/projects/{{ project.id }}/tasks/model-options-fragment"
+                    hx-trigger="load"
+                    hx-target="this"
+                    hx-swap="innerHTML"
+                >
+                    {% with models=task_models %}
+                    {% include "partials/task-model-picker.html" %}
+                    {% endwith %}
+                </div>
+                <button type="submit" class="btn btn-primary">Create</button>
             </div>
         </form>
-        <script>
-        async function createTask() {
-            const input = document.getElementById('task-description');
-            const modelSelect = document.getElementById('task-model');
-            const description = input.value.trim();
-            if (!description) {
-                alert('Please enter a task description');
-                return;
-            }
-            const btn = document.querySelector('#create-task-form button');
-            btn.disabled = true;
-            btn.textContent = 'Creating...';
-            const payload = {description: description};
-            if (modelSelect.value) {
-                payload.model = modelSelect.value;
-            }
-            try {
-                const response = await fetch('/api/projects/{{ project.id }}/tasks', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify(payload)
-                });
-                if (response.ok) {
-                    if (modelSelect.value) {
-                        localStorage.setItem('lastSelectedModel', modelSelect.value);
-                    }
-                    input.value = '';
-                    window.location.reload();
-                } else {
-                    alert('Failed to create task');
-                }
-            } catch (e) {
-                alert('Error: ' + e.message);
-            }
-            btn.disabled = false;
-            btn.textContent = 'Create';
-        }
-        </script>
-    </div>
-
-    <div x-show="activeTab === 'sessions'">
-        <div class="session-list">
-            {% for session in sessions %}
-            <div class="session-row">
-                <div class="session-status session-status-{{ session.status }}"></div>
-                <div class="session-info">
-                    <div class="session-title">{{ session.id }}</div>
-                    <div class="session-meta">{{ session.agent_id }} - {{ session.status }}</div>
-                </div>
-            </div>
-            {% else %}
-            <p class="empty-state">No sessions yet</p>
-            {% endfor %}
-        </div>
     </div>
 </div>
+
+<script>
+(() => {
+    const LAST_MODEL_KEY = "oc:lastTaskModel";
+    const PENDING_CARD_ID = "task-card-pending-create";
+
+    function applySavedTaskModelSelection() {
+        const select = document.getElementById("task-model");
+        if (!select) {
+            return;
+        }
+        const savedModel = localStorage.getItem(LAST_MODEL_KEY);
+        if (!savedModel) {
+            return;
+        }
+        const hasOption = Array.from(select.options).some((option) => option.value === savedModel);
+        if (hasOption) {
+            select.value = savedModel;
+        }
+    }
+
+    function bindTaskModelPersistence() {
+        const select = document.getElementById("task-model");
+        if (!select || select.dataset.persistenceBound === "1") {
+            return;
+        }
+        select.dataset.persistenceBound = "1";
+        select.addEventListener("change", () => {
+            if (select.value) {
+                localStorage.setItem(LAST_MODEL_KEY, select.value);
+                return;
+            }
+            localStorage.removeItem(LAST_MODEL_KEY);
+        });
+        applySavedTaskModelSelection();
+    }
+
+    function getRunningColumn() {
+        const board = document.getElementById("task-board");
+        if (!board) {
+            return null;
+        }
+        return board.querySelector(".task-column");
+    }
+
+    function clearPendingTaskCard() {
+        const existing = document.getElementById(PENDING_CARD_ID);
+        if (existing) {
+            existing.remove();
+        }
+    }
+
+    function renderPendingTaskCard() {
+        const runningColumn = getRunningColumn();
+        if (!runningColumn) {
+            return;
+        }
+        clearPendingTaskCard();
+        const emptyState = runningColumn.querySelector(".empty-column");
+        if (emptyState) {
+            emptyState.remove();
+        }
+
+        const input = document.getElementById("task-description");
+        const rawText = input ? input.value.trim() : "";
+        const title = rawText.length > 50 ? `${rawText.slice(0, 50)}...` : rawText || "New task";
+
+        const card = document.createElement("div");
+        card.id = PENDING_CARD_ID;
+        card.className = "task-card task-card-pending";
+        card.innerHTML = `
+            <div class="task-title">${title.replace(/</g, "&lt;").replace(/>/g, "&gt;")}</div>
+            <div class="task-meta task-meta-pending">Creating...</div>
+        `;
+        runningColumn.insertBefore(card, runningColumn.querySelector("h3")?.nextSibling || null);
+    }
+
+    function setCreateButtonBusy(isBusy) {
+        const form = document.getElementById("create-task-form");
+        if (!form) {
+            return;
+        }
+        const button = form.querySelector("button[type='submit']");
+        if (!button) {
+            return;
+        }
+        button.disabled = isBusy;
+        button.textContent = isBusy ? "Creating..." : "Create";
+    }
+
+    function bindCreateTaskOptimisticUi() {
+        const form = document.getElementById("create-task-form");
+        if (!form || form.dataset.optimisticBound === "1") {
+            return;
+        }
+        form.dataset.optimisticBound = "1";
+
+        form.addEventListener("htmx:beforeRequest", () => {
+            renderPendingTaskCard();
+            setCreateButtonBusy(true);
+        });
+        form.addEventListener("htmx:afterRequest", (event) => {
+            setCreateButtonBusy(false);
+            if (!event.detail.successful) {
+                clearPendingTaskCard();
+            }
+        });
+    }
+
+    document.addEventListener("DOMContentLoaded", () => {
+        bindTaskModelPersistence();
+        bindCreateTaskOptimisticUi();
+    });
+    document.body.addEventListener("htmx:afterSwap", (event) => {
+        const target = event.detail && event.detail.target;
+        if (target && target.id === "task-model-picker") {
+            bindTaskModelPersistence();
+        }
+        if (target && target.id === "task-board") {
+            clearPendingTaskCard();
+        }
+    });
+})();
+</script>
 {% endblock %}

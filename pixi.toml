@@ -13,6 +13,8 @@ python-multipart = ">=0.0.20"
 httpx = ">=0.28.1"
 watchfiles = ">=0.26.0"
 websockets = ">=12.0"
+markdown-it-py = ">=4.0.0"
+bleach = ">=6.2.0"
 
 [tasks]
 start = "python -m opencode_orchestrator.app"

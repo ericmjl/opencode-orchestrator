@@ -147,6 +147,66 @@ The Task Engine uses explicit write ownership to prevent duplicate messages:
 3. The HTTP stream parsing path may inspect assistant payloads for waiting states (questions/permissions), but it shall not insert assistant `TaskMessage` rows.
 4. Deduplication for imported assistant history is keyed by `(task_id, opencode_message_id)` so repeated sync passes remain idempotent.
 
+### Session Continuity for Follow-Up Messages
+
+Follow-up user messages must preserve conversational context by default:
+
+1. The send path selects the most recent session for the task (`ORDER BY started_at DESC LIMIT 1`) regardless of local terminal/non-terminal status labels.
+2. The selected session is reused when it is still reachable on the agent (`GET /session/{id}` success).
+3. A fresh session is created only when the selected session is unreachable (or no session exists).
+4. Session continuity takes precedence over local status drift caused by asynchronous sync timing.
+
+This avoids accidental context loss when the local task/session status flips to `completed` while the operator still intends to continue the same thread.
+
+### Project-Pinned Agent Bootstrap and Directory Guard
+
+Task execution paths enforce project-directory correctness through a bootstrap + validation contract:
+
+1. The engine derives `expected_project_path` from the task's parent project.
+2. It resolves a project-pinned agent by:
+   - reusing an existing registry entry whose configured `cwd` matches `expected_project_path`, or
+   - creating a new agent registry record with unique name, free port, and `cwd=expected_project_path`.
+3. It ensures the agent process is running (`ensure_agent_running`).
+4. Before committing task/session transitions, it validates the live agent directory via OpenCode `GET /path`.
+5. If live directory does not match `expected_project_path`, the flow fails closed with an explicit error; no new send/run operation is accepted for that mismatched runtime.
+
+This contract applies to:
+
+- initial auto-start on task creation,
+- manual task run from `created` state,
+- follow-up task messaging (including session-rotation fallback).
+
+### Post-Response Realtime Nudge
+
+After the orchestrator receives a successful OpenCode response payload on the background send path:
+
+1. It triggers a best-effort history import for the task's latest session.
+2. It emits `task-updated` so task-detail SSE subscribers refresh message/status/prompt fragments immediately.
+3. Assistant rows are still sourced from sqlite history only; this nudge updates visibility timing, not write ownership.
+
+The nudge ensures operators do not need manual page refresh to see new assistant turns.
+
+### Reactive Event Contract (Task Detail)
+
+Task detail consumers subscribe to typed events on `/api/projects/{id}/tasks/{taskId}/stream`:
+
+- `task-status` with `{ "status": "<state>" }`
+- `task-messages` with `{ "taskId": "<id>" }`
+- `task-prompts` with `{ "taskId": "<id>" }`
+- `task-updated` as compatibility/fallback umbrella event
+
+Status transitions are published as first-class events so the badge can update immediately (for example, `completed -> running` on follow-up send) without waiting for full-fragment refresh.
+
+### Coalesced Sync Nudge Queue
+
+Background sync triggers (periodic loop, OpenCode global events, post-send hooks) enqueue nudges into a shared coalesced queue:
+
+1. Nudges are deduplicated by `(project_id, task_id)` scope while pending.
+2. A single worker drains nudges in short batches and executes one sync pass.
+3. Sync execution remains single-flight guarded as a defensive invariant.
+
+This architecture reduces overlapping sync runs and mitigates refresh degradation under sustained event volume.
+
 ### TaskLog
 
 | Field | Type | Description |
@@ -306,6 +366,10 @@ Keeping `schedule_cron` and `schedule_id` on the Task record means the task is s
 ### Why sqlite-sync-only assistant persistence?
 
 Assistant text can arrive through multiple observation paths (HTTP response body and sqlite timeline). If both write to `TaskMessage`, the user sees duplicate assistant entries. Restricting assistant persistence to sqlite sync hardens an arrow-of-intent invariant: OpenCode history is the single source of truth for assistant timeline hydration.
+
+### Why reuse latest task session by default?
+
+Operators expect "send another message" to continue the same conversation unless that session is truly unavailable. Reusing only sessions marked `running` can silently fork context when local status trails real operator intent. Reusing the latest reachable session keeps prompts coherent and predictable.
 
 ## Implementation Status
 

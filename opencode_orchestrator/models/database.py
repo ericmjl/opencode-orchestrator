@@ -68,6 +68,7 @@ async def init_db() -> None:
                 retry_count INTEGER NOT NULL DEFAULT 0,
                 max_retries INTEGER NOT NULL DEFAULT 3,
                 archived INTEGER NOT NULL DEFAULT 0,
+                is_new INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 completed_at TEXT,
@@ -82,6 +83,8 @@ async def init_db() -> None:
                 role TEXT NOT NULL,
                 content TEXT NOT NULL,
                 metadata TEXT,
+                source TEXT NOT NULL DEFAULT 'orchestrator',
+                opencode_message_id TEXT,
                 timestamp TEXT NOT NULL,
                 FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
             );
@@ -141,10 +144,48 @@ async def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_questions_session ON questions(session_id);
             CREATE INDEX IF NOT EXISTS idx_questions_task ON questions(task_id);
             CREATE INDEX IF NOT EXISTS idx_questions_status ON questions(status);
+
+            CREATE TABLE IF NOT EXISTS opencode_sync_cursor (
+                session_id TEXT PRIMARY KEY,
+                last_time_created INTEGER,
+                last_message_id TEXT,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS task_claims (
+                task_id TEXT PRIMARY KEY,
+                claimed_by TEXT NOT NULL,
+                claimed_at TEXT NOT NULL,
+                FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
+            );
         """)
 
         try:
             await db.execute("ALTER TABLE tasks ADD COLUMN archived INTEGER NOT NULL DEFAULT 0")
+        except Exception:
+            pass
+
+        try:
+            await db.execute("ALTER TABLE tasks ADD COLUMN is_new INTEGER NOT NULL DEFAULT 0")
+        except Exception:
+            pass
+
+        try:
+            await db.execute(
+                "ALTER TABLE task_messages ADD COLUMN source TEXT NOT NULL DEFAULT 'orchestrator'"
+            )
+        except Exception:
+            pass
+
+        try:
+            await db.execute("ALTER TABLE task_messages ADD COLUMN opencode_message_id TEXT")
+        except Exception:
+            pass
+
+        try:
+            await db.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_task_messages_opencode_id ON task_messages(task_id, opencode_message_id)"
+            )
         except Exception:
             pass
 

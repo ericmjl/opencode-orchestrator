@@ -1,0 +1,60 @@
+<div class="task-column">
+    <h3>Running</h3>
+    {% for task in running_tasks %}
+    <a href="/projects/{{ project.id }}/tasks/{{ task.id }}" class="task-card task-card-link" id="task-{{ task.id }}">
+        <div class="task-title">{{ task.title }}</div>
+        <div class="task-meta">
+            {% if task.status == 'waiting_permission' %}
+            Waiting for permission
+            {% elif task.status == 'waiting_question' %}
+            Waiting for question response
+            {% else %}
+            Running...
+            {% endif %}
+        </div>
+    </a>
+    {% endfor %}
+    {% if not running_tasks %}
+    <p class="empty-column">No tasks</p>
+    {% endif %}
+</div>
+
+<div class="task-column">
+    <h3>Completed{% if completed_unread > 0 %} <span class="badge badge-unread">{{ completed_unread }}</span>{% endif %}</h3>
+    {% for task in completed_tasks %}
+    <div class="task-card task-card-completed{% if task.is_new %} task-card-new{% endif %}" id="task-{{ task.id }}">
+        {% if task.is_new %}<span class="unread-dot"></span>{% endif %}
+        <a href="/projects/{{ project.id }}/tasks/{{ task.id }}" class="task-card-link" style="text-decoration: none; color: inherit;">
+            <div class="task-title">{{ task.title }}</div>
+        </a>
+        <button class="btn btn-sm btn-archive" 
+                hx-delete="/api/projects/{{ project.id }}/tasks/{{ task.id }}/archive"
+                hx-target="#task-board"
+                hx-swap="innerHTML"
+                onclick="event.preventDefault(); event.stopPropagation();">
+            Archive
+        </button>
+    </div>
+    {% endfor %}
+    {% if not completed_tasks %}
+    <p class="empty-column">No tasks</p>
+    {% endif %}
+</div>
+
+<div class="task-column">
+    <h3>Failed</h3>
+    {% for task in failed_tasks %}
+    <a href="/projects/{{ project.id }}/tasks/{{ task.id }}" class="task-card task-card-failed task-card-link" id="task-{{ task.id }}">
+        <div class="task-title">{{ task.title }}</div>
+        <div class="task-meta">Retry {{ task.retry_count }}/{{ task.max_retries }}</div>
+    </a>
+    {% else %}
+    <p class="empty-column">No tasks</p>
+    {% endfor %}
+</div>
+
+{% if include_sidebar_oob|default(true) and sidebar_unread > 0 %}
+<span id="sidebar-project-badge-{{ project.id }}" class="project-badge" hx-swap-oob="outerHTML">{{ sidebar_unread }}</span>
+{% elif include_sidebar_oob|default(true) %}
+<span id="sidebar-project-badge-{{ project.id }}" style="display:none;" hx-swap-oob="outerHTML"></span>
+{% endif %}

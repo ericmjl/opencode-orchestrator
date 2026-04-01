@@ -1,0 +1,31 @@
+<div class="project-list" id="projects-list">
+    {% for project in projects %}
+    <div class="project-card" id="project-card-{{ project.id }}">
+        <div class="project-header">
+            <h3>{{ project.name }}{% if project.get('unread_count', 0) > 0 %} <span class="badge badge-unread">{{ project.unread_count }}</span>{% endif %}</h3>
+            {% if project.has_git %}
+            <span class="badge badge-git">git</span>
+            {% endif %}
+        </div>
+        <p class="project-path">{{ project.path }}</p>
+        {% if project.vcs_url %}
+        <p class="project-vcs">{{ project.vcs_url }}</p>
+        {% endif %}
+        <div class="project-meta">
+            <a href="/projects/{{ project.id }}" class="btn btn-sm">Tasks</a>
+            <a href="/projects/{{ project.id }}/sessions" class="btn btn-sm">Sessions</a>
+            <form
+                hx-delete="/api/projects/{{ project.id }}"
+                hx-target="#project-card-{{ project.id }}"
+                hx-swap="delete"
+                hx-confirm="Remove {{ project.name | e }} from view? The project files will NOT be deleted."
+                style="display:inline-block;"
+            >
+                <button type="submit" class="btn btn-sm btn-danger">Remove</button>
+            </form>
+        </div>
+    </div>
+    {% else %}
+    <p class="empty-state">No projects registered. Add one to get started.</p>
+    {% endfor %}
+</div>

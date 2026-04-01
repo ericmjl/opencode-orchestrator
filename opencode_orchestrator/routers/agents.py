@@ -1,18 +1,72 @@
 import uuid
 import os
 import asyncio
+from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Form, HTTPException
+from fastapi.responses import HTMLResponse
+from jinja2 import Environment, FileSystemLoader
 from pydantic import BaseModel
 
-from opencode_orchestrator.models import get_db, row_to_dict, now
+from opencode_orchestrator.models import fetch_one, fetch_all, execute, now
 
 router = APIRouter()
+templates = Environment(loader=FileSystemLoader(Path(__file__).parent.parent / "templates"))
+
+
+async def _agent_rows() -> list[dict]:
+    return await fetch_all("SELECT * FROM agent_registry ORDER BY name ASC")
+
+
+async def get_available_models() -> list[dict[str, str]]:
+    """Query available OpenCode agents for provider/model metadata."""
+    import httpx
+
+    models: list[dict[str, str]] = []
+    agents = await fetch_all("SELECT * FROM agent_registry WHERE status = 'available'")
+
+    for agent in agents:
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(
+                    f"http://127.0.0.1:{agent['port']}/config/providers", timeout=10.0
+                )
+                if resp.status_code != 200:
+                    continue
+                data = resp.json()
+                providers = data.get("providers", []) if isinstance(data, dict) else data
+                for provider in providers:
+                    provider_id = provider.get("id", "")
+                    provider_name = provider.get("name", provider_id)
+                    provider_models = provider.get("models", {})
+                    if isinstance(provider_models, dict):
+                        provider_models = list(provider_models.values())
+                    for model in provider_models:
+                        model_id = model.get("id", "")
+                        if not model_id:
+                            continue
+                        full_id = f"{provider_id}/{model_id}"
+                        model_name = model.get("name", model_id)
+                        models.append(
+                            {
+                                "id": full_id,
+                                "name": model_name,
+                                "provider": provider_id,
+                            }
+                        )
+        except Exception:
+            continue
+
+    unique_models: dict[str, dict[str, str]] = {}
+    for model in models:
+        unique_models.setdefault(model["id"], model)
+    return sorted(unique_models.values(), key=lambda model: model["id"])
 
 
 class AgentCreate(BaseModel):
     name: str
     port: int
+    cwd: str | None = None
 
 
 class AgentUpdate(BaseModel):
@@ -37,70 +91,29 @@ class AgentResponse(BaseModel):
 
 @router.get("", response_model=list[AgentResponse])
 async def list_agents():
-    async for db in get_db():
-        rows = await db.execute("SELECT * FROM agent_registry ORDER BY name ASC")
-        agents = [row_to_dict(row) for row in await rows.fetchall()]
+    agents = await fetch_all("SELECT * FROM agent_registry ORDER BY name ASC")
 
-        return [
-            AgentResponse(
-                id=a["id"],
-                name=a["name"],
-                command=a["command"],
-                port=a["port"],
-                cwd=a.get("cwd"),
-                capabilities=a["capabilities"],
-                status=a["status"],
-                config=a["config"],
-                pid=a.get("pid"),
-                last_seen=a["last_seen"],
-                created_at=a["created_at"],
-            )
-            for a in agents
-        ]
+    return [
+        AgentResponse(
+            id=a["id"],
+            name=a["name"],
+            command=a["command"],
+            port=a["port"],
+            cwd=a.get("cwd"),
+            capabilities=a["capabilities"],
+            status=a["status"],
+            config=a["config"],
+            pid=a.get("pid"),
+            last_seen=a["last_seen"],
+            created_at=a["created_at"],
+        )
+        for a in agents
+    ]
 
 
 @router.get("/models")
 async def list_available_models():
-    import httpx
-
-    models = []
-    async for db in get_db():
-        rows = await db.execute("SELECT * FROM agent_registry WHERE status = 'available'")
-        agents = [row_to_dict(row) for row in await rows.fetchall()]
-
-    for agent in agents:
-        try:
-            async with httpx.AsyncClient() as client:
-                resp = await client.get(
-                    f"http://127.0.0.1:{agent['port']}/config/providers", timeout=10.0
-                )
-                if resp.status_code == 200:
-                    data = resp.json()
-                    providers = data.get("providers", []) if isinstance(data, dict) else data
-                    for provider in providers:
-                        provider_id = provider.get("id", "")
-                        provider_name = provider.get("name", provider_id)
-                        provider_models = provider.get("models", {})
-                        if isinstance(provider_models, dict):
-                            provider_models = list(provider_models.values())
-                        for model in provider_models:
-                            model_id = model.get("id", "")
-                            if model_id:
-                                full_id = f"{provider_id}/{model_id}"
-                                model_name = model.get("name", model_id)
-                                if provider_name != provider_id:
-                                    model_name = f"{model_name} via {provider_name}"
-                                models.append(
-                                    {
-                                        "id": full_id,
-                                        "name": model_name,
-                                        "provider": provider_id,
-                                    }
-                                )
-        except Exception:
-            pass
-
-    return {"models": models}
+    return {"models": await get_available_models()}
 
 
 @router.post("", status_code=201, response_model=AgentResponse)
@@ -110,24 +123,24 @@ async def create_agent(data: AgentCreate):
     agent_id = str(uuid.uuid4())
     timestamp = now()
 
-    async for db in get_db():
-        existing = await db.execute("SELECT id FROM agent_registry WHERE name = ?", (data.name,))
-        if await existing.fetchone():
-            raise HTTPException(status_code=409, detail=f"Agent '{data.name}' already registered")
+    existing = await fetch_one("SELECT id FROM agent_registry WHERE name = ?", (data.name,))
+    if existing:
+        raise HTTPException(status_code=409, detail=f"Agent '{data.name}' already registered")
 
-        await db.execute(
-            """INSERT INTO agent_registry (id, name, command, port, cwd, capabilities, status, config, pid, last_seen, created_at)
-               VALUES (?, ?, ?, ?, ?, NULL, 'offline', NULL, NULL, NULL, ?)""",
-            (agent_id, data.name, command, data.port, os.getcwd(), timestamp),
-        )
-        await db.commit()
+    agent_cwd = os.path.expanduser(data.cwd) if data.cwd else os.getcwd()
+
+    await execute(
+        """INSERT INTO agent_registry (id, name, command, port, cwd, capabilities, status, config, pid, last_seen, created_at)
+           VALUES (?, ?, ?, ?, ?, NULL, 'offline', NULL, NULL, NULL, ?)""",
+        (agent_id, data.name, command, data.port, agent_cwd, timestamp),
+    )
 
     return AgentResponse(
         id=agent_id,
         name=data.name,
         command=command,
         port=data.port,
-        cwd=os.getcwd(),
+        cwd=agent_cwd,
         capabilities=None,
         status="offline",
         config=None,
@@ -137,28 +150,36 @@ async def create_agent(data: AgentCreate):
     )
 
 
+@router.post("/form")
+async def create_agent_form(
+    name: str = Form(...),
+    port: int = Form(...),
+    cwd: str | None = Form(default=None),
+):
+    await create_agent(AgentCreate(name=name, port=port, cwd=cwd))
+    template = templates.get_template("partials/agent-list.html")
+    return HTMLResponse(content=template.render(agents=await _agent_rows()))
+
+
 @router.post("/{agent_id}/start")
 async def start_agent(agent_id: str):
-    async for db in get_db():
-        row = await db.execute("SELECT * FROM agent_registry WHERE id = ?", (agent_id,))
-        agent = await row.fetchone()
-        if not agent:
-            raise HTTPException(status_code=404, detail=f"Agent '{agent_id}' not found")
-        a = row_to_dict(agent)
+    agent = await fetch_one("SELECT * FROM agent_registry WHERE id = ?", (agent_id,))
+    if not agent:
+        raise HTTPException(status_code=404, detail=f"Agent '{agent_id}' not found")
 
-    if a.get("pid"):
+    if agent.get("pid"):
         try:
-            os.kill(a["pid"], 0)
+            os.kill(agent["pid"], 0)
             return {"status": "error", "message": "Agent already running"}
         except OSError:
             pass
 
     try:
         proc = await asyncio.create_subprocess_shell(
-            a["command"],
+            agent["command"],
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            cwd=a.get("cwd") or os.getcwd(),
+            cwd=agent.get("cwd") or os.getcwd(),
         )
 
         await asyncio.sleep(3)
@@ -171,12 +192,10 @@ async def start_agent(agent_id: str):
             return {"status": "error", "message": f"Failed to start: {stderr.decode()[:200]}"}
 
         timestamp = now()
-        async for db in get_db():
-            await db.execute(
-                "UPDATE agent_registry SET status = 'starting', pid = ?, last_seen = ? WHERE id = ?",
-                (pid, timestamp, agent_id),
-            )
-            await db.commit()
+        await execute(
+            "UPDATE agent_registry SET status = 'starting', pid = ?, last_seen = ? WHERE id = ?",
+            (pid, timestamp, agent_id),
+        )
 
         return {"status": "started", "pid": pid}
 
@@ -186,14 +205,11 @@ async def start_agent(agent_id: str):
 
 @router.post("/{agent_id}/stop")
 async def stop_agent(agent_id: str):
-    async for db in get_db():
-        row = await db.execute("SELECT * FROM agent_registry WHERE id = ?", (agent_id,))
-        agent = await row.fetchone()
-        if not agent:
-            raise HTTPException(status_code=404, detail=f"Agent '{agent_id}' not found")
-        a = row_to_dict(agent)
+    agent = await fetch_one("SELECT * FROM agent_registry WHERE id = ?", (agent_id,))
+    if not agent:
+        raise HTTPException(status_code=404, detail=f"Agent '{agent_id}' not found")
 
-    pid = a.get("pid")
+    pid = agent.get("pid")
     if not pid:
         return {"status": "error", "message": "Agent not running"}
 
@@ -208,80 +224,68 @@ async def stop_agent(agent_id: str):
         pass
 
     timestamp = now()
-    async for db in get_db():
-        await db.execute(
-            "UPDATE agent_registry SET status = 'offline', pid = NULL, last_seen = ? WHERE id = ?",
-            (timestamp, agent_id),
-        )
-        await db.commit()
+    await execute(
+        "UPDATE agent_registry SET status = 'offline', pid = NULL, last_seen = ? WHERE id = ?",
+        (timestamp, agent_id),
+    )
 
     return {"status": "stopped"}
 
 
 @router.get("/{agent_id}", response_model=AgentResponse)
 async def get_agent(agent_id: str):
-    async for db in get_db():
-        row = await db.execute("SELECT * FROM agent_registry WHERE id = ?", (agent_id,))
-        agent = await row.fetchone()
-        if not agent:
-            raise HTTPException(status_code=404, detail=f"Agent '{agent_id}' not found")
-        a = row_to_dict(agent)
-        return AgentResponse(
-            id=a["id"],
-            name=a["name"],
-            command=a["command"],
-            port=a["port"],
-            cwd=a.get("cwd"),
-            capabilities=a["capabilities"],
-            status=a["status"],
-            config=a["config"],
-            pid=a.get("pid"),
-            last_seen=a["last_seen"],
-            created_at=a["created_at"],
-        )
+    agent = await fetch_one("SELECT * FROM agent_registry WHERE id = ?", (agent_id,))
+    if not agent:
+        raise HTTPException(status_code=404, detail=f"Agent '{agent_id}' not found")
+    return AgentResponse(
+        id=agent["id"],
+        name=agent["name"],
+        command=agent["command"],
+        port=agent["port"],
+        cwd=agent.get("cwd"),
+        capabilities=agent["capabilities"],
+        status=agent["status"],
+        config=agent["config"],
+        pid=agent.get("pid"),
+        last_seen=agent["last_seen"],
+        created_at=agent["created_at"],
+    )
 
 
 @router.delete("/{agent_id}", status_code=204)
 async def delete_agent(agent_id: str):
-    async for db in get_db():
-        row = await db.execute("SELECT * FROM agent_registry WHERE id = ?", (agent_id,))
-        agent = await row.fetchone()
-        if agent:
-            a = row_to_dict(agent)
-            pid = a.get("pid")
-            if pid:
-                try:
-                    os.kill(pid, 15)
-                except OSError:
-                    pass
+    agent = await fetch_one("SELECT * FROM agent_registry WHERE id = ?", (agent_id,))
+    if agent:
+        pid = agent.get("pid")
+        if pid:
+            try:
+                os.kill(pid, 15)
+            except OSError:
+                pass
 
-        result = await db.execute("DELETE FROM agent_registry WHERE id = ?", (agent_id,))
-        await db.commit()
-        if result.rowcount == 0:
-            raise HTTPException(status_code=404, detail=f"Agent '{agent_id}' not found")
+    result = await execute("DELETE FROM agent_registry WHERE id = ?", (agent_id,))
+    if result.rowcount == 0:
+        raise HTTPException(status_code=404, detail=f"Agent '{agent_id}' not found")
 
 
 async def ensure_agent_running(agent_id: str):
-    async for db in get_db():
-        row = await db.execute("SELECT * FROM agent_registry WHERE id = ?", (agent_id,))
-        agent = await row.fetchone()
-        if not agent:
-            return None
-        a = row_to_dict(agent)
+    agent = await fetch_one("SELECT * FROM agent_registry WHERE id = ?", (agent_id,))
+    if not agent:
+        return None
 
-    pid = a.get("pid")
+    pid = agent.get("pid")
     if pid:
         try:
             os.kill(pid, 0)
-            return a
+            return agent
         except OSError:
             pass
 
     proc = await asyncio.create_subprocess_shell(
-        a["command"],
+        agent["command"],
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
-        cwd=a.get("cwd") or os.getcwd(),
+        cwd=agent.get("cwd") or os.getcwd(),
     )
     await asyncio.sleep(3)
 
@@ -292,49 +296,64 @@ async def ensure_agent_running(agent_id: str):
         return None
 
     timestamp = now()
-    async for db in get_db():
-        await db.execute(
-            "UPDATE agent_registry SET status = 'starting', pid = ?, last_seen = ? WHERE id = ?",
-            (new_pid, timestamp, agent_id),
-        )
-        await db.commit()
+    await execute(
+        "UPDATE agent_registry SET status = 'starting', pid = ?, last_seen = ? WHERE id = ?",
+        (new_pid, timestamp, agent_id),
+    )
 
-    return a
+    return agent
 
 
 @router.post("/{agent_id}/ping")
 async def ping_agent(agent_id: str):
     import httpx
 
-    a = await ensure_agent_running(agent_id)
-    if not a:
+    agent = await ensure_agent_running(agent_id)
+    if not agent:
         return {"status": "error", "message": "Failed to start agent"}
 
-    base_url = f"http://127.0.0.1:{a['port']}"
+    base_url = f"http://127.0.0.1:{agent['port']}"
 
     try:
         async with httpx.AsyncClient() as client:
             resp = await client.get(f"{base_url}/global/health", timeout=10.0)
             if resp.status_code == 200:
                 timestamp = now()
-                async for db in get_db():
-                    await db.execute(
-                        "UPDATE agent_registry SET status = 'available', last_seen = ? WHERE id = ?",
-                        (timestamp, agent_id),
-                    )
-                    await db.commit()
+                await execute(
+                    "UPDATE agent_registry SET status = 'available', last_seen = ? WHERE id = ?",
+                    (timestamp, agent_id),
+                )
                 return {"status": "available", "capabilities": {}}
             else:
                 return {"status": "error", "message": f"Health check failed: {resp.status_code}"}
     except Exception as e:
         timestamp = now()
-        async for db in get_db():
-            await db.execute(
-                "UPDATE agent_registry SET status = 'error', last_seen = ? WHERE id = ?",
-                (timestamp, agent_id),
-            )
-            await db.commit()
+        await execute(
+            "UPDATE agent_registry SET status = 'error', last_seen = ? WHERE id = ?",
+            (timestamp, agent_id),
+        )
         return {"status": "error", "message": str(e)}
+
+
+@router.post("/{agent_id}/start-form")
+async def start_agent_form(agent_id: str):
+    await start_agent(agent_id)
+    template = templates.get_template("partials/agent-list.html")
+    return HTMLResponse(content=template.render(agents=await _agent_rows()))
+
+
+@router.post("/{agent_id}/stop-form")
+async def stop_agent_form(agent_id: str):
+    await stop_agent(agent_id)
+    template = templates.get_template("partials/agent-list.html")
+    return HTMLResponse(content=template.render(agents=await _agent_rows()))
+
+
+@router.post("/{agent_id}/ping-form")
+async def ping_agent_form(agent_id: str):
+    await ping_agent(agent_id)
+    template = templates.get_template("partials/agent-list.html")
+    return HTMLResponse(content=template.render(agents=await _agent_rows()))
 
 
 class AgentMessage(BaseModel):

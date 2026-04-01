@@ -2,19 +2,63 @@
 
 {% block content %}
 <div class="page-header">
-    <h1>{{ task.title }}</h1>
+    <h1>{{ task.title }}{% if task.is_new %} <span class="badge badge-unread">new</span>{% endif %}</h1>
     <div class="project-nav">
-        <a href="/projects/{{ project.id }}" class="btn btn-sm">← Back to Project</a>
+        <a id="task-back-to-project-link" href="/projects/{{ project.id }}" class="btn btn-sm">← Back to Project</a>
     </div>
 </div>
 
-<div class="task-detail">
-    <div class="task-info">
+<div
+    id="task-detail-live-root"
+    class="task-board"
+    style="grid-template-columns: 2fr 1fr; margin-top: 1rem; align-items: start;"
+    data-events-url="/api/projects/{{ project.id }}/tasks/{{ task.id }}/stream"
+    data-messages-url="/api/projects/{{ project.id }}/tasks/{{ task.id }}/messages-fragment"
+    data-status-url="/api/projects/{{ project.id }}/tasks/{{ task.id }}/status-fragment"
+    data-prompts-url="/api/projects/{{ project.id }}/tasks/{{ task.id }}/prompts-fragment"
+>
+    <div class="task-column">
+        <h3>Messages</h3>
+        <div
+            id="task-messages-region"
+            class="info-section task-messages-scroll"
+            hx-get="/api/projects/{{ project.id }}/tasks/{{ task.id }}/messages-fragment"
+            hx-trigger="load"
+            hx-sync="#task-send-message-form:abort"
+            hx-swap="innerHTML"
+        >
+            <p class="empty-state">Loading messages...</p>
+        </div>
+        <div class="info-section" style="margin-top: 0.75rem;">
+            <form
+                id="task-send-message-form"
+                hx-post="/api/projects/{{ project.id }}/tasks/{{ task.id }}/send-message-form"
+                hx-target="#task-messages-region"
+                hx-swap="innerHTML"
+                hx-on::after-request="if(event.detail.successful){ this.reset(); }"
+            >
+                <div class="form-group">
+                    <label for="message">Send message</label>
+                    <textarea id="message" name="message" rows="3" placeholder="Ask the agent to continue..." required></textarea>
+                </div>
+                <button type="submit" class="btn btn-primary">Send</button>
+            </form>
+        </div>
+    </div>
+
+    <div class="task-column">
+        <h3>Task</h3>
         <div class="info-section">
-            <h3>Task Details</h3>
             <div class="info-row">
                 <span class="info-label">Status:</span>
-                <span class="badge badge-{{ task.status }}">{{ task.status }}</span>
+                <span
+                    id="task-status-region"
+                    hx-get="/api/projects/{{ project.id }}/tasks/{{ task.id }}/status-fragment"
+                    hx-trigger="load"
+                    hx-swap="innerHTML"
+                >
+                    <span id="task-status-badge" class="badge badge-{{ task.status }}">{{ task.status }}</span>
+                </span>
                 {% if task.archived %}
                 <span class="badge" style="background: var(--text-muted); color: var(--bg);">archived</span>
                 {% endif %}
@@ -36,8 +80,8 @@
         </div>
 
         {% if agent %}
+        <h3 style="margin-top: 1rem;">Agent</h3>
         <div class="info-section">
-            <h3>Agent</h3>
             <div class="info-row">
                 <span class="info-label">Name:</span>
                 <span>{{ agent.name }}</span>
@@ -53,13 +97,9 @@
         </div>
         {% endif %}
 
+        <h3 style="margin-top: 1rem;">Session</h3>
         {% if session %}
         <div class="info-section">
-            <h3>Session</h3>
-            <div class="info-row">
-                <span class="info-label">Session ID:</span>
-                <span class="mono">{{ session.id }}</span>
-            </div>
             <div class="info-row">
                 <span class="info-label">Status:</span>
                 <span class="badge badge-{{ session.status }}">{{ session.status }}</span>
@@ -74,205 +114,222 @@
                 <span>{{ session.pid }}</span>
             </div>
             {% endif %}
-            {% if agent and session.status == 'running' %}
-            <div class="info-row" style="margin-top: 0.75rem;">
-                <a href="http://127.0.0.1:{{ agent.port }}/{{ agent.cwd | opencode_slug }}/session/{{ session.id }}" target="_blank" rel="noopener" class="btn btn-sm">Open Live Session</a>
+            {% if agent and session.status in ['running', 'completed', 'failed'] %}
+            <div style="margin-top: 0.75rem;">
+                <a href="http://127.0.0.1:{{ agent.port }}/{{ agent.cwd | opencode_slug }}/session/{{ session.id }}" target="_blank" rel="noopener" class="btn btn-sm">Open Live Session ↗</a>
             </div>
             {% endif %}
         </div>
+        {% elif task.status == 'created' or task.status == 'failed' %}
+        <div class="info-section">
+            <form
+                hx-post="/api/projects/{{ project.id }}/tasks/{{ task.id }}/run"
+                hx-target="#task-status-region"
+                hx-swap="none"
+            >
+                <button type="submit" class="btn btn-primary">{% if task.status == 'failed' %}Retry Task{% else %}Start Task{% endif %}</button>
+            </form>
+        </div>
+        {% else %}
+        <div class="info-section">
+            <p>No session found.</p>
+        </div>
         {% endif %}
-    </div>
 
-    {% if (task.status == 'running' or task.status == 'completed') %}
-    <div class="session-panel" id="session-console">
-        <h3>Session Console</h3>
-        <div class="messages-container" id="messages-container">
-            {% for msg in messages %}
-            <div class="message message-{{ msg.role }}">
-                <div class="message-role">{{ msg.role }}</div>
-                <div class="message-content">{{ msg.content }}</div>
-                <div class="message-time">{{ msg.timestamp }}</div>
-            </div>
-            {% endfor %}
+        <h3 style="margin-top: 1rem;">Pending Prompts</h3>
+        <div
+            id="task-prompts-region"
+            class="info-section"
+            hx-get="/api/projects/{{ project.id }}/tasks/{{ task.id }}/prompts-fragment"
+            hx-trigger="load"
+            hx-swap="innerHTML"
+        >
+            <p class="empty-state">Loading prompts...</p>
         </div>
-        <div class="message-form">
-            <input type="text" id="message-input" placeholder="Send a message to the agent..." class="message-input">
-            <button type="button" id="send-btn" class="btn btn-primary">Send</button>
+
+        <h3 style="margin-top: 1rem;">Actions</h3>
+        <div class="info-section">
+            {% if task.archived %}
+            <form hx-post="/api/projects/{{ project.id }}/tasks/{{ task.id }}/unarchive" hx-swap="none" hx-on::after-request="if(event.detail.successful){ window.location='/projects/{{ project.id }}'; }">
+                <button type="submit" class="btn">Unarchive Task</button>
+            </form>
+            {% endif %}
+            {% if not task.archived and task.status != 'running' %}
+            <form hx-post="/api/projects/{{ project.id }}/tasks/{{ task.id }}/archive" hx-swap="none" hx-on::after-request="if(event.detail.successful){ window.location='/projects/{{ project.id }}'; }">
+                <button type="submit" class="btn">Archive Task</button>
+            </form>
+            {% endif %}
+            <form
+                hx-delete="/api/projects/{{ project.id }}/tasks/{{ task.id }}"
+                hx-confirm="Delete this task? This cannot be undone."
+                hx-swap="none"
+                hx-on::after-request="if(event.detail.successful){ window.location='/projects/{{ project.id }}'; }"
+            >
+                <button type="submit" class="btn btn-danger">Delete Task</button>
+            </form>
         </div>
-    </div>
-    {% elif task.status == 'created' %}
-    <div class="info-section">
-        <h3>Actions</h3>
-        <form action="/api/projects/{{ project.id }}/tasks/{{ task.id }}/run" method="POST">
-            <button type="submit" class="btn btn-primary">Start Task</button>
-        </form>
-    </div>
-    {% elif task.status == 'failed' %}
-    <div class="info-section">
-        <h3>Actions</h3>
-        <p>Task failed. Retry {{ task.retry_count }}/{{ task.max_retries }}</p>
-        <form action="/api/projects/{{ project.id }}/tasks/{{ task.id }}/run" method="POST">
-            <button type="submit" class="btn btn-primary">Retry Task</button>
-        </form>
-    </div>
-    {% else %}
-    <div class="info-section">
-        <h3>Actions</h3>
-        <p>No active session found.</p>
-    </div>
-    {% endif %}
-
-    {% if not task.archived and task.status != 'running' %}
-    <div class="info-section">
-        <button class="btn" onclick="
-            fetch('/api/projects/{{ project.id }}/tasks/{{ task.id }}/archive', { method: 'POST' })
-                .then(r => { if(r.ok) window.location.href = '/projects/{{ project.id }}'; else alert('Failed to archive'); });
-        ">Archive Task</button>
-    </div>
-    {% endif %}
-
-    {% if task.archived %}
-    <div class="info-section">
-        <h3>Archived</h3>
-        <p>This task has been archived and is hidden from the board.</p>
-        <button class="btn" onclick="
-            fetch('/api/projects/{{ project.id }}/tasks/{{ task.id }}/unarchive', { method: 'POST' })
-                .then(r => { if(r.ok) window.location.reload(); else alert('Failed to unarchive'); });
-        ">Unarchive Task</button>
-    </div>
-    {% endif %}
-
-    <div class="info-section" style="margin-top: 1rem;">
-        <h3>Danger Zone</h3>
-        <button class="btn btn-danger" onclick="if(confirm('Delete this task? This cannot be undone.')) { fetch('/api/projects/{{ project.id }}/tasks/{{ task.id }}', { method: 'DELETE' }).then(() => window.location.href = '/projects/{{ project.id }}') }">Delete Task</button>
     </div>
 </div>
 
-{% if task.status == 'running' or task.status == 'completed' %}
+{% if task.is_new %}
+<div hx-post="/api/projects/{{ project.id }}/tasks/{{ task.id }}/mark-read" hx-trigger="load" hx-swap="none"></div>
+{% endif %}
+
 <script>
-const projectId = '{{ project.id }}';
-const taskId = '{{ task.id }}';
-const messagesContainer = document.getElementById('messages-container');
-const messageInput = document.getElementById('message-input');
-const sendBtn = document.getElementById('send-btn');
-const statusBadge = document.querySelector('.badge-{{ task.status }}');
+(() => {
+    const SEND_FORM_ID = "task-send-message-form";
 
-let waitingForReply = false;
-let pollInterval = null;
-const POLL_TIMEOUT_MS = 120_000;
-let pollStart = null;
-
-// Number of messages rendered server-side; we use count-based dedup
-// instead of timestamp comparison to avoid timezone/precision mismatches.
-let knownMessageCount = {{ messages|length if messages else 0 }};
-
-function updateStatusBadge(status) {
-    if (!statusBadge) return;
-    statusBadge.textContent = status;
-    statusBadge.className = `badge badge-${status}`;
-}
-
-function addMessage(role, content, timestamp) {
-    const div = document.createElement('div');
-    div.className = `message message-${role}`;
-    const safeContent = content.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-    div.innerHTML = `
-        <div class="message-role">${role}</div>
-        <div class="message-content">${safeContent}</div>
-        <div class="message-time">${new Date(timestamp).toLocaleTimeString()}</div>
-    `;
-    messagesContainer.appendChild(div);
-    messagesContainer.scrollTop = messagesContainer.scrollHeight;
-}
-
-async function pollForMessages() {
-    try {
-        const resp = await fetch(`/api/projects/${projectId}/tasks/${taskId}/messages`);
-        if (!resp.ok) return;
-
-        const data = await resp.json();
-        const messages = data.messages;
-
-        // Only look at messages beyond what we've already rendered
-        if (messages.length <= knownMessageCount) return;
-
-        const newMessages = messages.slice(knownMessageCount);
-        knownMessageCount = messages.length;
-
-        let gotAssistantReply = false;
-        for (const msg of newMessages) {
-            if (msg.role === 'user') {
-                // Skip — user messages are added optimistically in sendMessage()
-                continue;
-            }
-            if (msg.role === 'assistant') {
-                addMessage('assistant', msg.content, msg.timestamp);
-                gotAssistantReply = true;
-            }
-        }
-
-        if (gotAssistantReply && waitingForReply) {
-            waitingForReply = false;
-            sendBtn.disabled = false;
-            updateStatusBadge('completed');
-            clearInterval(pollInterval);
-            pollInterval = null;
-        }
-
-        if (waitingForReply && pollStart && (Date.now() - pollStart > POLL_TIMEOUT_MS)) {
-            waitingForReply = false;
-            sendBtn.disabled = false;
-            clearInterval(pollInterval);
-            pollInterval = null;
-            updateStatusBadge('completed');
-            addMessage('system', 'Timed out waiting for agent reply. You can try sending again.', new Date().toISOString());
-        }
-    } catch (e) {
-        // Silently ignore polling errors
-    }
-}
-
-async function sendMessage() {
-    const msg = messageInput.value.trim();
-    if (!msg) return;
-
-    // Optimistically render user message and bump the count so the poll
-    // skips it when it appears in the DB response.
-    addMessage('user', msg, new Date().toISOString());
-    knownMessageCount += 1;
-
-    messageInput.value = '';
-    sendBtn.disabled = true;
-    waitingForReply = true;
-    updateStatusBadge('running');
-
-    try {
-        const resp = await fetch(`/api/projects/${projectId}/tasks/${taskId}/send-message`, {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({message: msg})
-        });
-        if (!resp.ok) {
-            waitingForReply = false;
-            sendBtn.disabled = false;
-            updateStatusBadge('completed');
-            alert('Failed to send message');
+    function setSendButtonBusy(form, isBusy) {
+        const button = form.querySelector("button[type='submit']");
+        if (!button) {
             return;
         }
-        pollStart = Date.now();
-        pollInterval = setInterval(pollForMessages, 1000);
-    } catch(e) {
-        waitingForReply = false;
-        sendBtn.disabled = false;
-        updateStatusBadge('completed');
-        alert('Error: ' + e.message);
+        button.disabled = isBusy;
+        button.textContent = isBusy ? "Sending..." : "Send";
     }
-}
 
-sendBtn.addEventListener('click', sendMessage);
-messageInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') sendMessage();
-});
+    function regionHasConfirmedUserMessage(content) {
+        const region = document.getElementById("task-messages-region");
+        if (!region) {
+            return false;
+        }
+        const contentNodes = region.querySelectorAll(".message.message-user .message-content");
+        const target = content.trim();
+        return Array.from(contentNodes).some((node) => (node.textContent || "").trim() === target);
+    }
+
+    function clearPendingSendState(form) {
+        delete form.dataset.pendingSendText;
+        setSendButtonBusy(form, false);
+    }
+
+    function maybeFinalizePendingSend(form) {
+        const content = form.dataset.pendingSendText;
+        if (!content) {
+            return;
+        }
+        if (regionHasConfirmedUserMessage(content)) {
+            clearPendingSendState(form);
+        }
+    }
+
+    function bindOptimisticSend() {
+        const form = document.getElementById(SEND_FORM_ID);
+        if (!form || form.dataset.optimisticBound === "1") {
+            return;
+        }
+        form.dataset.optimisticBound = "1";
+
+        form.addEventListener("htmx:beforeRequest", () => {
+            const textarea = form.querySelector("#message");
+            const pendingText = textarea ? textarea.value.trim() : "";
+            if (!pendingText) {
+                return;
+            }
+            form.dataset.pendingSendText = pendingText;
+            setSendButtonBusy(form, true);
+        });
+
+        form.addEventListener("htmx:afterRequest", (event) => {
+            if (!event.detail.successful) {
+                clearPendingSendState(form);
+                return;
+            }
+            maybeFinalizePendingSend(form);
+        });
+
+        document.body.addEventListener("htmx:afterSwap", (event) => {
+            const target = event.detail && event.detail.target;
+            if (target && target.id === "task-messages-region") {
+                maybeFinalizePendingSend(form);
+            }
+        });
+    }
+
+    function bindBackLinkFallback() {
+        const link = document.getElementById("task-back-to-project-link");
+        if (!link || link.dataset.fallbackBound === "1") {
+            return;
+        }
+        link.dataset.fallbackBound = "1";
+        link.addEventListener("click", (event) => {
+            if (event.defaultPrevented || event.button !== 0) {
+                return;
+            }
+            if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
+                return;
+            }
+            const href = link.href;
+            window.setTimeout(() => {
+                if (window.location.pathname.includes("/tasks/")) {
+                    window.location.assign(href);
+                }
+            }, 150);
+        });
+    }
+
+    function updateStatusBadge(status) {
+        const badge = document.getElementById("task-status-badge");
+        if (!badge || !status) {
+            return;
+        }
+        badge.textContent = status;
+        badge.className = `badge badge-${status}`;
+    }
+
+    function refreshRegion(url, targetId) {
+        if (!window.htmx || !url) {
+            return;
+        }
+        window.htmx.ajax("GET", url, { target: `#${targetId}`, swap: "innerHTML" });
+    }
+
+    function connectTaskEvents() {
+        const liveRoot = document.getElementById("task-detail-live-root");
+        if (!liveRoot || liveRoot.dataset.eventsBound === "1") {
+            return;
+        }
+        liveRoot.dataset.eventsBound = "1";
+        const eventsUrl = liveRoot.dataset.eventsUrl;
+        if (!eventsUrl) {
+            return;
+        }
+        const messagesUrl = liveRoot.dataset.messagesUrl;
+        const statusUrl = liveRoot.dataset.statusUrl;
+        const promptsUrl = liveRoot.dataset.promptsUrl;
+        const events = new EventSource(eventsUrl);
+
+        events.addEventListener("task-status", (event) => {
+            try {
+                const payload = JSON.parse(event.data || "{}");
+                if (payload.status) {
+                    updateStatusBadge(payload.status);
+                }
+            } catch {
+                refreshRegion(statusUrl, "task-status-region");
+            }
+        });
+        events.addEventListener("task-messages", () => {
+            refreshRegion(messagesUrl, "task-messages-region");
+        });
+        events.addEventListener("task-prompts", () => {
+            refreshRegion(promptsUrl, "task-prompts-region");
+        });
+        events.addEventListener("task-updated", () => {
+            refreshRegion(messagesUrl, "task-messages-region");
+            refreshRegion(statusUrl, "task-status-region");
+            refreshRegion(promptsUrl, "task-prompts-region");
+        });
+        events.onerror = () => {
+            // EventSource retries automatically; keep handlers attached.
+        };
+    }
+
+    document.addEventListener("DOMContentLoaded", () => {
+        bindOptimisticSend();
+        bindBackLinkFallback();
+        connectTaskEvents();
+    });
+})();
 </script>
-{% endif %}
 {% endblock %}

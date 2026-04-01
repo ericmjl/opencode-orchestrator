@@ -1,0 +1,27 @@
+<div id="task-prompts-list">
+    {% for question in questions %}
+    <div class="info-section" style="margin-bottom: 0.75rem;">
+        <div class="info-row">
+            <span class="info-label">{{ question.question_type }}</span>
+            <span class="badge badge-created">pending</span>
+        </div>
+        <p style="margin: 0.5rem 0;">{{ question.content }}</p>
+        <form
+            hx-post="/api/projects/sessions/{{ question.session_id }}/questions/{{ question.id }}/respond-form"
+            hx-target="#task-prompts-list"
+            hx-swap="outerHTML"
+        >
+            <input
+                type="text"
+                name="response"
+                placeholder="Type response to continue"
+                required
+                style="width: 100%; margin-bottom: 0.5rem;"
+            />
+            <button type="submit" class="btn btn-sm btn-primary">Send response</button>
+        </form>
+    </div>
+    {% else %}
+    <p class="empty-state">No pending prompts.</p>
+    {% endfor %}
+</div>

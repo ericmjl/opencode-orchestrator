@@ -1,4 +1,5 @@
 # ruff: noqa: E402
+import asyncio
 import logging
 import os
 import random
@@ -11,6 +12,11 @@ from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from opencode_orchestrator.models import init_db
+from opencode_orchestrator.session_sync import (
+    sync_opencode_nudge_worker_forever,
+    sync_opencode_event_bridge_forever,
+    sync_opencode_session_tasks_forever,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -22,7 +28,27 @@ logging.basicConfig(
 async def lifespan(app: FastAPI):
     await init_db()
     await recover_stale_tasks()
-    yield
+    sync_nudge_worker_task = asyncio.create_task(sync_opencode_nudge_worker_forever())
+    sync_task = asyncio.create_task(sync_opencode_session_tasks_forever())
+    event_bridge_task = asyncio.create_task(sync_opencode_event_bridge_forever())
+    try:
+        yield
+    finally:
+        event_bridge_task.cancel()
+        sync_task.cancel()
+        sync_nudge_worker_task.cancel()
+        try:
+            await event_bridge_task
+        except asyncio.CancelledError:
+            pass
+        try:
+            await sync_task
+        except asyncio.CancelledError:
+            pass
+        try:
+            await sync_nudge_worker_task
+        except asyncio.CancelledError:
+            pass
 
 
 async def recover_stale_tasks():
@@ -103,7 +129,7 @@ app = FastAPI(title="OpenCode Orchestrator", version="0.1.0", lifespan=lifespan)
 static_dir = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
-from opencode_orchestrator.routers import projects, tasks, sessions, agents, worktrees
+from opencode_orchestrator.routers import projects, tasks, sessions, agents, worktrees, scheduler
 from opencode_orchestrator.routers.pages import pages_router
 
 app.include_router(projects.router, prefix="/api/projects", tags=["projects"])
@@ -111,6 +137,7 @@ app.include_router(tasks.router, prefix="/api/projects", tags=["tasks"])
 app.include_router(sessions.router, prefix="/api/projects", tags=["sessions"])
 app.include_router(agents.router, prefix="/api/agents", tags=["agents"])
 app.include_router(worktrees.router, prefix="/api/projects", tags=["worktrees"])
+app.include_router(scheduler.router, prefix="/api", tags=["scheduler"])
 app.include_router(pages_router, tags=["pages"])
 
 

@@ -133,6 +133,8 @@ The same API is the source of truth for model selection. The UI should not hardc
 
 **Rationale**: UI interactions are HTMX-mediated by default: endpoints return HTML snippets, and OOB swaps update sidebar badges and status chips. This keeps behavior deterministic and server-owned without SPA complexity.
 
+For perceived responsiveness, the frontend may render short-lived optimistic placeholders (for example, a pending task card immediately after submit) while HTMX requests are in flight. Server-rendered snippets remain authoritative and replace optimistic placeholders on response.
+
 **Alternatives considered**:
 - React/Vue SPA: Adds build complexity, second language ecosystem, overkill for this UI
 - Pure HTMX (no JS): Some interactions need a thin JS layer
@@ -153,6 +155,82 @@ The same API is the source of truth for model selection. The UI should not hardc
 **Alternatives considered**:
 - Dual-write (stream + sqlite): Causes duplicate assistant messages and ambiguous ownership.
 - Stream-only: Loses durable replay/cursor semantics from OpenCode history tables.
+
+### Decision 8: Sticky UI Inputs for Operator Throughput
+
+**Choice**: The task creation model selector remembers the user's last explicit selection across page reloads and HTMX fragment swaps.
+
+**Rationale**: Operators often create multiple tasks in sequence with the same model. Persisting model preference removes repetitive form input and lowers friction without changing server authority over available model options.
+
+### Decision 9: Uniform Design Language Compliance
+
+**Choice**: All UI elements shall conform to a single shared design language defined in `docs/design-language.md` (tokens, spacing, typography, component patterns, and interaction states).
+
+**Rationale**: A uniform design system prevents visual drift between pages, keeps controls predictable for operators, and reduces regressions caused by ad-hoc inline styling.
+
+**Alternatives considered**:
+- Per-page styling freedom: Fast to prototype, but causes inconsistent controls and maintenance overhead.
+- Full CSS framework migration: Could improve consistency, but is outside v1 scope and conflicts with the current lightweight HTMX-first approach.
+
+### Decision 10: Server-Confirmed Chat History in Reactive Views
+
+**Choice**: In task-detail chat views, user messages are considered displayed only when rendered from server-backed history; the client does not inject optimistic user-message rows into history.
+
+**Rationale**: Send/refresh races can create flicker and transient inconsistency. Holding send controls in a pending state until persistence is confirmed keeps the thread authoritative and reduces visual churn regardless of whether refresh is polling- or SSE-triggered.
+
+### Decision 11: SSE-First UI Reactivity for Operator Responsiveness
+
+**Choice**: For high-traffic UI regions (task detail and task board), the frontend shall prefer SSE-triggered HTMX refresh over continuous browser polling.
+
+**Rationale**: Continuous polling increases request volume, keeps stale timers alive, and can degrade perceived responsiveness during long sessions. SSE-triggered swaps keep server authority while reducing unnecessary churn and improving "snappy" operator feedback.
+
+**Alternatives considered**:
+- Continuous polling everywhere: simpler initially, but heavy and noisy under sustained usage.
+- Full WebSocket app layer: powerful, but more complexity than needed for snippet-based server-rendered UI.
+- Client-side local state reconciliation: reduces server calls, but increases divergence risk from source-of-truth state.
+
+### Decision 12: Region Re-Render for Board Consistency
+
+**Choice**: Mutations that affect list emptiness (for example, archiving the last completed task) shall re-render the full task-board region instead of deleting a single DOM node.
+
+**Rationale**: Column empty-state placeholders (`No tasks`) are derived from server-side list evaluation. Full region swaps keep structural state correct without client-side reconciliation logic.
+
+### Decision 13: Session-Continuous Follow-Up Messaging
+
+**Choice**: Task follow-up sends reuse the latest reachable task session by default, even if local status snapshots have drifted to a terminal label.
+
+**Rationale**: Operators interpret a follow-up send as continuation of the existing conversation context. Restricting reuse to locally `running` sessions can fork context unexpectedly and produce assistant replies that ignore prior turns. Reusing the latest reachable session preserves intent continuity.
+
+**Alternatives considered**:
+- Status-gated reuse (`running` only): simpler query, but loses context on status drift.
+- Always new session per follow-up: deterministic isolation, but poor conversational UX.
+
+### Decision 14: Realtime Visibility with Non-Blocking Ingestion
+
+**Choice**: After successful background responses, the backend emits immediate task-level refresh signals while keeping heavy history ingestion off the main event loop.
+
+**Rationale**: Operators should not manually refresh to see assistant turns. At the same time, synchronous history reads can degrade navigation/refresh responsiveness. Pairing immediate `task-updated` publication with off-thread history reads balances freshness and UI responsiveness.
+
+### Decision 15: Typed Task Events + Coalesced Sync Nudges
+
+**Choice**: Task detail reactivity is driven by typed task events (`task-status`, `task-messages`, `task-prompts`) over the task stream, while backend sync triggers are funneled through a coalesced nudge queue and single worker.
+
+**Rationale**: Region-wide fragment refresh on generic events introduces status lag and race windows. Typed events let the UI update the status badge immediately while refreshing only affected regions. Coalesced nudges prevent overlapping periodic/event/post-send sync runs from accumulating and degrading responsiveness.
+
+**Alternatives considered**:
+- Generic `task-updated` only: simpler but too coarse; causes visible UI delay.
+- Direct sync call at every trigger point: leads to overlap and event-loop pressure under load.
+
+### Decision 16: Project-Pinned Agent Bootstrap for Directory Integrity
+
+**Choice**: Task execution paths (`create`, `run`, and follow-up `send-message`) shall resolve to a project-pinned agent whose configured `cwd` and live `/path` directory match the task's `project.path`. When no matching agent exists, the orchestrator bootstraps one.
+
+**Rationale**: Operators expect task context to match the selected project directory. Reusing an arbitrary "available" agent can silently execute in a stale directory and contaminate outcomes. Project-pinned bootstrap makes directory correctness a first-class invariant rather than a best-effort hint.
+
+**Alternatives considered**:
+- Global shared agent pool only: simpler scheduling, but unsafe under multi-project usage.
+- Manual operator restart only: explicit, but too fragile and high-friction.
+- Trusting persisted `cwd` without live verification: fast, but misses runtime drift and process startup mismatch.
 
 ## Data Model Overview
 
@@ -215,6 +293,7 @@ Project
 | Session Manager | ✅ Implemented | Basic session management, cancel |
 | Worktrees | ✅ Implemented | Git worktree creation/removal |
 | Frontend | ✅ Implemented | HTMX-first pages with fragment endpoints |
+| SSE UI Reactivity (Board + Task Detail) | ✅ Implemented | Event-driven HTMX refresh for task board and task detail regions |
 | OpenCode History Sync | ✅ Implemented | Imports message timeline from OpenCode SQLite (`opencode.db`) |
 | Scheduler | ⏳ Not implemented | Planned for future |
 | SSE Output Streaming | ⏳ Not implemented | Planned for future |

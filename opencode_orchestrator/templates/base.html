@@ -5,39 +5,58 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>OpenCode Orchestrator</title>
     <script src="https://unpkg.com/htmx.org@2.0.0"></script>
-    <script defer src="https://unpkg.com/alpinejs@3.x.x"></script>
+    <script src="https://unpkg.com/htmx-ext-sse@2.2.2/sse.js"></script>
     <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
-    <nav class="navbar">
-        <div class="nav-brand">OpenCode Orchestrator</div>
-        <div class="nav-links">
-            <a href="/projects" class="nav-link">Projects</a>
-            <a href="/settings" class="nav-link">Settings</a>
-        </div>
-    </nav>
+    <div class="app-layout">
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <div class="sidebar-brand">OpenCode</div>
+            </div>
+            
+            <nav class="sidebar-nav">
+                <a href="/" class="sidebar-link {% if request.url.path == '/' %}active{% endif %}">Dashboard</a>
+                <a href="/projects" class="sidebar-link {% if request.url.path.startswith('/projects') %}active{% endif %}">Projects</a>
+                <a href="/settings" class="sidebar-link {% if request.url.path == '/settings' %}active{% endif %}">Settings</a>
+            </nav>
 
-    <main class="container" id="main">
-        {% block content %}{% endblock %}
-    </main>
+            <div class="sidebar-section">
+                <div class="sidebar-section-title">Projects</div>
+            </div>
+            
+            <div class="sidebar-projects" id="sidebar-projects">
+                {% for project in projects %}
+                <a href="/projects/{{ project.id }}" id="sidebar-project-{{ project.id }}" class="sidebar-project {% if active_project_id and active_project_id == project.id %}active{% endif %}">
+                    <span class="sidebar-project-name">{{ project.name }}</span>
+                    <span class="sidebar-project-path">{{ project.path }}</span>
+                    {% if project.unread_count %}
+                    <span id="sidebar-project-badge-{{ project.id }}" class="project-badge">{{ project.unread_count }}</span>
+                    {% else %}
+                    <span id="sidebar-project-badge-{{ project.id }}" style="display:none;"></span>
+                    {% endif %}
+                </a>
+                {% else %}
+                <div style="padding: 0.5rem 0.75rem; color: var(--text-muted); font-size: 0.8rem;">
+                    No projects
+                </div>
+                {% endfor %}
+            </div>
+        </aside>
 
-    <script>
-        document.addEventListener('alpine:init', () => {
-            Alpine.store('modal', {
-                open(name) {
-                    this.active = name;
-                    document.body.classList.add('modal-open');
-                },
-                close(name) {
-                    this.active = null;
-                    document.body.classList.remove('modal-open');
-                },
-                isOpen(name) {
-                    return this.active === name;
-                },
-                active: null
-            });
-        });
-    </script>
+        <main class="main-content">
+            <header class="main-header">
+                <div class="main-brand">{% block header_title %}OpenCode Orchestrator{% endblock %}</div>
+                <nav class="main-nav">
+                    <a href="/projects" class="main-nav-link">Projects</a>
+                    <a href="/settings" class="main-nav-link">Settings</a>
+                </nav>
+            </header>
+
+            <div class="container" id="main">
+                {% block content %}{% endblock %}
+            </div>
+        </main>
+    </div>
 </body>
 </html>

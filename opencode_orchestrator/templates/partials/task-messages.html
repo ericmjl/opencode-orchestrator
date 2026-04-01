@@ -1,0 +1,23 @@
+<div id="task-messages-thread">
+    {% for message in messages %}
+    <div class="message message-{{ message.role }}" style="margin-bottom: 0.75rem;">
+        <div class="message-role" style="font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase;">
+            {{ message.role }}
+        </div>
+        {% set is_long_assistant = message.role == "assistant" and (message.content | length) > 1200 %}
+        {% if is_long_assistant %}
+        <details class="message-expandable">
+            <summary class="message-expandable-summary">
+                Show full response ({{ message.content | length }} chars)
+                <span class="message-expandable-preview">{{ message.content[:240] | e }}{% if (message.content | length) > 240 %}...{% endif %}</span>
+            </summary>
+            <div class="message-content markdown-content">{{ message.content_html | safe }}</div>
+        </details>
+        {% else %}
+        <div class="message-content markdown-content">{{ message.content_html | safe }}</div>
+        {% endif %}
+    </div>
+    {% else %}
+    <p class="empty-state">No messages yet.</p>
+    {% endfor %}
+</div>

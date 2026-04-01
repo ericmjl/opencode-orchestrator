@@ -99,6 +99,11 @@ POST http://127.0.0.1:<port>/session/<session_id>/message
 {"parts": [{"type": "text", "text": "user message"}]}
 ```
 
+**List providers and models**:
+```
+GET http://127.0.0.1:<port>/config/providers
+```
+
 **Response**:
 ```json
 {
@@ -152,6 +157,7 @@ The orchestrator builds: `opencode serve --port 4000`
 | `/api/agents/{id}/stop` | POST | Stop the agent server |
 | `/api/agents/{id}/ping` | POST | Health check |
 | `/api/agents/{id}/message` | POST | Send message to agent |
+| `/api/agents/models` | GET | Aggregate provider/model list from available agents |
 
 **POST /api/agents/{id}/message** — `AgentMessageRequest`:
 
